@@ -1,5 +1,17 @@
-import type { HarnessLspServerSettings, HarnessMcpServerSettings } from "@t3tools/contracts";
+import {
+  DEFAULT_MODEL_BY_PROVIDER,
+  type HarnessLspServerSettings,
+  type HarnessMcpServerSettings,
+  type ModelSelection,
+  type ProviderKind,
+} from "@t3tools/contracts";
 
+import type { HarnessUpstreamCredentials } from "../../harness/types.ts";
+import {
+  isClaudeSubscriptionOAuthTokenConfigured,
+  probeClaudeSubscriptionAuth,
+  probeCodexSubscriptionAuth,
+} from "../../harness/cliAuthProbe.ts";
 import { LspManager } from "../../harness/lsp/client.ts";
 import type { McpServerConfig } from "../../harness/mcp/client.ts";
 import {
@@ -8,10 +20,8 @@ import {
 } from "../../harness/opencodeInterop.ts";
 
 export type HarnessUpstreamProvider = "anthropic" | "openai" | "openrouter";
-export interface HarnessUpstreamAuth {
-  readonly apiKey: string;
-  readonly baseURL?: string | undefined;
-}
+
+export type HarnessUpstreamAuth = HarnessUpstreamCredentials;
 
 export function parseHarnessModel(model: string): {
   readonly upstream: HarnessUpstreamProvider;
@@ -34,6 +44,78 @@ export function parseHarnessModel(model: string): {
     return { upstream: "openai", model: trimmed };
   }
   return { upstream: "openrouter", model: trimmed };
+}
+
+export type RoutableHarnessSourceProvider = Extract<ProviderKind, "codex" | "claudeAgent">;
+
+export function harnessUpstreamForRoutable(
+  source: RoutableHarnessSourceProvider,
+): HarnessUpstreamProvider {
+  return source === "codex" ? "openai" : "anthropic";
+}
+
+export function harnessModelFromRoutableSource(
+  source: RoutableHarnessSourceProvider,
+  model: string,
+): string {
+  const trimmed = model.trim();
+  if (trimmed.includes("/")) {
+    return trimmed;
+  }
+  return `${harnessUpstreamForRoutable(source)}/${trimmed}`;
+}
+
+export function coerceModelSelectionToHarness(
+  modelSelection: ModelSelection,
+): Extract<ModelSelection, { provider: "harness" }> | undefined {
+  if (modelSelection.provider === "harness") {
+    return {
+      provider: "harness",
+      model: modelSelection.model.trim(),
+    };
+  }
+  if (modelSelection.provider === "codex" || modelSelection.provider === "claudeAgent") {
+    const source = modelSelection.provider;
+    return {
+      provider: "harness",
+      model: harnessModelFromRoutableSource(
+        source,
+        modelSelection.model?.trim() || DEFAULT_MODEL_BY_PROVIDER[source],
+      ),
+    };
+  }
+  return undefined;
+}
+
+export function routableSessionModelSelectionToHarness(
+  routedProvider: RoutableHarnessSourceProvider,
+  selection: ModelSelection | undefined,
+): { provider: "harness"; model: string } {
+  if (selection?.provider === "harness") {
+    return { provider: "harness", model: selection.model.trim() };
+  }
+  const source: RoutableHarnessSourceProvider =
+    selection?.provider === "codex" || selection?.provider === "claudeAgent"
+      ? selection.provider
+      : routedProvider;
+  return {
+    provider: "harness",
+    model: harnessModelFromRoutableSource(
+      source,
+      selection?.model?.trim() || DEFAULT_MODEL_BY_PROVIDER[source],
+    ),
+  };
+}
+
+export function stripRoutableHarnessModelPrefix(
+  routedProvider: RoutableHarnessSourceProvider,
+  model: string | undefined,
+): string | undefined {
+  if (!model) {
+    return model;
+  }
+  const prefix = `${harnessUpstreamForRoutable(routedProvider)}/`;
+  return model.startsWith(prefix) ? model.slice(prefix.length) : model;
 }
 
 function trimOrUndefined(value: string | undefined): string | undefined {
@@ -104,16 +186,53 @@ async function loadHarnessInterop(workspaceRoot: string) {
 export async function resolveHarnessUpstreamAuth(options: {
   readonly workspaceRoot: string;
   readonly upstream: HarnessUpstreamProvider;
+  readonly claudeBinaryPath?: string;
+  readonly codexBinaryPath?: string;
+  readonly codexHomePath?: string;
 }): Promise<HarnessUpstreamAuth | undefined> {
   const interop = await loadHarnessInterop(options.workspaceRoot);
   const imported = interop.providerOptions[options.upstream];
   const apiKey = trimOrUndefined(imported?.apiKey) ?? readHarnessEnvApiKey(options.upstream);
-  if (!apiKey) {
-    return undefined;
+  if (apiKey) {
+    const baseURL = trimOrUndefined(imported?.baseURL);
+    return baseURL ? { kind: "api_key", apiKey, baseURL } : { kind: "api_key", apiKey };
   }
 
-  const baseURL = trimOrUndefined(imported?.baseURL);
-  return baseURL ? { apiKey, baseURL } : { apiKey };
+  if (options.upstream === "anthropic") {
+    const ok = await probeClaudeSubscriptionAuth(options.claudeBinaryPath);
+    if (!ok) {
+      return undefined;
+    }
+    const trimmedClaude = trimOrUndefined(options.claudeBinaryPath);
+    return trimmedClaude
+      ? { kind: "claude_subscription", claudeBinaryPath: trimmedClaude }
+      : { kind: "claude_subscription" };
+  }
+
+  if (options.upstream === "openai") {
+    const ok = await probeCodexSubscriptionAuth(options.codexBinaryPath, options.codexHomePath);
+    if (!ok) {
+      return undefined;
+    }
+    const trimmedCodexBin = trimOrUndefined(options.codexBinaryPath);
+    const trimmedCodexHome = trimOrUndefined(options.codexHomePath);
+    if (trimmedCodexBin && trimmedCodexHome) {
+      return {
+        kind: "openai_subscription",
+        codexBinaryPath: trimmedCodexBin,
+        codexHomePath: trimmedCodexHome,
+      };
+    }
+    if (trimmedCodexBin) {
+      return { kind: "openai_subscription", codexBinaryPath: trimmedCodexBin };
+    }
+    if (trimmedCodexHome) {
+      return { kind: "openai_subscription", codexHomePath: trimmedCodexHome };
+    }
+    return { kind: "openai_subscription" };
+  }
+
+  return undefined;
 }
 
 export async function resolveHarnessMcpConfigs(options: {
@@ -134,11 +253,18 @@ export async function resolveHarnessMcpConfigs(options: {
   return [...merged.values()];
 }
 
-export async function readHarnessProbe(workspaceRoot: string): Promise<{
+export async function readHarnessProbe(
+  workspaceRoot: string,
+  cliPaths?: {
+    readonly claudeBinaryPath?: string;
+    readonly codexBinaryPath?: string;
+    readonly codexHomePath?: string;
+  },
+): Promise<{
   readonly status: "ready" | "warning" | "error";
   readonly auth: {
     readonly status: "authenticated" | "unauthenticated";
-    readonly type: "apiKey";
+    readonly type: "apiKey" | "subscription" | "mixed";
     readonly label?: string | undefined;
   };
   readonly message?: string;
@@ -146,19 +272,49 @@ export async function readHarnessProbe(workspaceRoot: string): Promise<{
   const interop = await loadHarnessInterop(workspaceRoot);
   const available: string[] = [];
   const importedLabels: string[] = [];
+  let sawApiKey = false;
+  let sawSubscription = false;
 
   for (const upstream of ["anthropic", "openai", "openrouter"] as const) {
     const imported = interop.providerOptions[upstream];
     const apiKey = trimOrUndefined(imported?.apiKey) ?? readHarnessEnvApiKey(upstream);
-    if (!apiKey) {
+    if (apiKey) {
+      sawApiKey = true;
+      const label =
+        upstream === "anthropic"
+          ? "Anthropic API"
+          : upstream === "openai"
+            ? "OpenAI API"
+            : "OpenRouter";
+      available.push(label);
+      if (trimOrUndefined(imported?.baseURL) || trimOrUndefined(imported?.apiKey)) {
+        importedLabels.push(label);
+      }
       continue;
     }
 
-    const label =
-      upstream === "anthropic" ? "Anthropic" : upstream === "openai" ? "OpenAI" : "OpenRouter";
-    available.push(label);
-    if (trimOrUndefined(imported?.baseURL) || trimOrUndefined(imported?.apiKey)) {
-      importedLabels.push(label);
+    if (upstream === "anthropic") {
+      const ok = await probeClaudeSubscriptionAuth(cliPaths?.claudeBinaryPath);
+      if (ok) {
+        sawSubscription = true;
+        available.push(
+          isClaudeSubscriptionOAuthTokenConfigured()
+            ? "Claude subscription (CLAUDE_CODE_OAUTH_TOKEN)"
+            : "Claude subscription (CLI)",
+        );
+      }
+      continue;
+    }
+
+    if (upstream === "openai") {
+      const ok = await probeCodexSubscriptionAuth(
+        cliPaths?.codexBinaryPath,
+        cliPaths?.codexHomePath,
+      );
+      if (ok) {
+        sawSubscription = true;
+        available.push("Codex / ChatGPT subscription (CLI)");
+      }
     }
   }
 
@@ -170,21 +326,23 @@ export async function readHarnessProbe(workspaceRoot: string): Promise<{
         type: "apiKey",
       },
       message:
-        "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY, or provide provider auth in OpenCode config.",
+        "Add ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY (or OpenCode provider keys), or use Claude / Codex subscriptions: run `claude` and sign in, or `claude setup-token` then set CLAUDE_CODE_OAUTH_TOKEN on the server process; run `codex login` for ChatGPT-backed Codex. Unset ANTHROPIC_API_KEY when you want the Claude subscription path instead of API keys.",
     };
   }
 
   const importedMessage =
     importedLabels.length > 0 ? ` Imported OpenCode config for ${importedLabels.join(", ")}.` : "";
 
+  const authType = sawApiKey && sawSubscription ? "mixed" : sawApiKey ? "apiKey" : "subscription";
+
   return {
     status: "ready",
     auth: {
       status: "authenticated",
-      type: "apiKey",
+      type: authType,
       label: available.join(", "),
     },
-    message: `Using provider auth from ${available.join(", ")}.${importedMessage}`,
+    message: `Harness auth: ${available.join(", ")}.${importedMessage}`,
   };
 }
 

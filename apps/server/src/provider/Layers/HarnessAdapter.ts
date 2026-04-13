@@ -2,6 +2,7 @@ import {
   type ToolLifecycleItemType,
   DEFAULT_MODEL_BY_PROVIDER,
   EventId,
+  type ModelSelection,
   type ProviderRuntimeEvent,
   type ProviderSessionStartInput,
   type ProviderSession,
@@ -19,6 +20,7 @@ import type { ConversationMessage, ToolCall, ToolResult } from "../../harness/ty
 import { ServerSettingsService } from "../../serverSettings";
 import { ScheduledTasksService } from "../../scheduledTasks/Services/ScheduledTasks";
 import {
+  coerceModelSelectionToHarness,
   createHarnessLspManager,
   parseHarnessModel,
   resolveHarnessMcpConfigs,
@@ -364,6 +366,48 @@ const makeHarnessAdapter = Effect.gen(function* () {
     }
   };
 
+  const HARNESS_PRIOR_TURN_DRAIN_MS = 45_000;
+
+  const awaitPriorHarnessTurnEnded = async (context: HarnessSessionContext): Promise<void> => {
+    if (!context.pendingTurn && !context.runPromise) {
+      return;
+    }
+    if (context.pendingTurn) {
+      context.pendingTurn.abortRequested = true;
+    }
+    context.runAbortController?.abort();
+    const waitOn = context.runPromise;
+    if (waitOn) {
+      await Promise.race([
+        waitOn.catch(() => undefined),
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, HARNESS_PRIOR_TURN_DRAIN_MS);
+        }),
+      ]);
+    }
+    if (!context.pendingTurn) {
+      return;
+    }
+    try {
+      await finalizeTurn(context, {
+        state: "interrupted",
+        errorMessage: "Replaced by a new turn while the harness was still running.",
+      });
+    } catch {
+      context.pendingTurn = undefined;
+      context.runAbortController = undefined;
+      context.runPromise = undefined;
+      const { activeTurnId: _ignoredActiveTurnId, ...sessionBase } = context.session;
+      context.session = {
+        ...sessionBase,
+        status: "ready",
+        updatedAt: nowIso(),
+        resumeCursor: serializeResumeCursor(context),
+        lastError: "Prior harness turn was force-cleared after wait timeout.",
+      };
+    }
+  };
+
   const startSession: HarnessAdapterShape["startSession"] = Effect.fn("startSession")(
     function* (input) {
       if (input.provider !== undefined && input.provider !== PROVIDER) {
@@ -392,8 +436,20 @@ const makeHarnessAdapter = Effect.gen(function* () {
           items: [],
         })) ?? [];
       const startedAt = nowIso();
+      let harnessModelSelection: ModelSelection | undefined;
+      if (input.modelSelection !== undefined) {
+        const coerced = coerceModelSelectionToHarness(input.modelSelection as ModelSelection);
+        if (!coerced) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startSession",
+            issue: `Harness startSession expects modelSelection provider 'harness', 'codex', or 'claudeAgent' (got '${(input.modelSelection as ModelSelection).provider}').`,
+          });
+        }
+        harnessModelSelection = coerced;
+      }
       const model = normalizeModelSelection({
-        modelSelection: input.modelSelection,
+        modelSelection: harnessModelSelection ?? input.modelSelection,
         fallbackModel: resumed?.model,
       });
 
@@ -455,33 +511,55 @@ const makeHarnessAdapter = Effect.gen(function* () {
       });
     }
 
-    if (input.modelSelection !== undefined && input.modelSelection.provider !== PROVIDER) {
-      return yield* new ProviderAdapterValidationError({
-        provider: PROVIDER,
-        operation: "sendTurn",
-        issue: `Expected model selection provider '${PROVIDER}' but received '${input.modelSelection.provider}'.`,
-      });
+    let effectiveModelSelection = input.modelSelection;
+    if (effectiveModelSelection !== undefined) {
+      const coerced = coerceModelSelectionToHarness(effectiveModelSelection);
+      if (!coerced) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue: `Harness sendTurn expects modelSelection provider 'harness', 'codex', or 'claudeAgent' (got '${effectiveModelSelection.provider}').`,
+        });
+      }
+      effectiveModelSelection = coerced;
     }
 
-    if (context.pendingTurn || context.runPromise) {
-      return yield* new ProviderAdapterRequestError({
-        provider: PROVIDER,
-        method: "turn/start",
-        detail: `Thread '${input.threadId}' already has an active harness turn.`,
-      });
-    }
+    yield* Effect.tryPromise({
+      try: () => awaitPriorHarnessTurnEnded(context),
+      catch: (cause) =>
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "turn/start",
+          detail: `Failed while clearing prior harness turn: ${cause instanceof Error ? cause.message : String(cause)}`,
+          cause,
+        }),
+    });
 
     const selectedModel = normalizeModelSelection({
-      modelSelection: input.modelSelection,
+      modelSelection: effectiveModelSelection,
       fallbackModel: context.session.model,
     });
     const parsedModel = parseHarnessModel(selectedModel);
     const workspaceRoot = context.session.cwd ?? process.cwd();
+    const unifiedSettings = yield* serverSettings.getSettings.pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "turn/start",
+            detail: `Failed to load settings: ${cause.message}`,
+            cause,
+          }),
+      ),
+    );
     const upstreamAuth = yield* Effect.tryPromise({
       try: () =>
         resolveHarnessUpstreamAuth({
           workspaceRoot,
           upstream: parsedModel.upstream,
+          claudeBinaryPath: unifiedSettings.providers.claudeAgent.binaryPath,
+          codexBinaryPath: unifiedSettings.providers.codex.binaryPath,
+          codexHomePath: unifiedSettings.providers.codex.homePath,
         }),
       catch: (cause) =>
         new ProviderAdapterRequestError({
@@ -492,24 +570,19 @@ const makeHarnessAdapter = Effect.gen(function* () {
         }),
     });
     if (!upstreamAuth) {
+      const authHint =
+        parsedModel.upstream === "openai"
+          ? "No harness auth for OpenAI models: run `codex login`, set OPENAI_API_KEY, or add a key in OpenCode config."
+          : parsedModel.upstream === "anthropic"
+            ? "No harness auth for Claude models: run `claude auth login`, set ANTHROPIC_API_KEY, or add a key in OpenCode config."
+            : "No harness auth for this model: set OPENROUTER_API_KEY or add a key in OpenCode config.";
       return yield* new ProviderAdapterRequestError({
         provider: PROVIDER,
         method: "turn/start",
-        detail: `Missing API key for harness upstream '${parsedModel.upstream}'.`,
+        detail: authHint,
       });
     }
-    const harnessSettings = yield* serverSettings.getSettings.pipe(
-      Effect.map((settings) => settings.providers.harness),
-      Effect.mapError(
-        (cause) =>
-          new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "turn/start",
-            detail: `Failed to load harness settings: ${cause.message}`,
-            cause,
-          }),
-      ),
-    );
+    const harnessSettings = unifiedSettings.providers.harness;
     const mcpConfigs = yield* Effect.tryPromise({
       try: () =>
         resolveHarnessMcpConfigs({
@@ -577,9 +650,10 @@ const makeHarnessAdapter = Effect.gen(function* () {
           config: {
             model: parsedModel.model,
             provider: parsedModel.upstream,
-            apiKey: upstreamAuth.apiKey,
-            ...(upstreamAuth.baseURL ? { baseURL: upstreamAuth.baseURL } : {}),
+            upstream: upstreamAuth,
             mode: input.interactionMode === "plan" ? "plan" : "agent",
+            harnessRuntimeMode:
+              context.session.runtimeMode === "full-access" ? "full-access" : "auto-accept-edits",
             workspaceRoot,
           },
           userMessage: userInput,

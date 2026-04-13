@@ -34,6 +34,9 @@ const PRESET_SCHEDULES = [
   { label: "Weekly on Monday", cron: "0 9 * * 1" },
 ] as const;
 
+const PRESET_CRON_SET = new Set<string>(PRESET_SCHEDULES.map((preset) => preset.cron));
+const CUSTOM_SCHEDULE_VALUE = "__custom__";
+
 type TaskFormState = ScheduledTaskCreateInput;
 
 function createBlankTaskForm(): TaskFormState {
@@ -130,6 +133,9 @@ function TaskForm(props: {
   readonly submitPending: boolean;
 }) {
   const { value, onChange, onCancel, onSubmit, submitLabel, submitPending } = props;
+  const scheduleSelectValue = PRESET_CRON_SET.has(value.cronExpression)
+    ? value.cronExpression
+    : CUSTOM_SCHEDULE_VALUE;
 
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-border bg-background/90 p-3">
@@ -155,10 +161,17 @@ function TaskForm(props: {
       />
       <div className="grid gap-2 sm:grid-cols-2">
         <select
-          value={value.cronExpression}
-          onChange={(event) => onChange({ ...value, cronExpression: event.target.value })}
+          value={scheduleSelectValue}
+          onChange={(event) => {
+            const next = event.target.value;
+            if (next === CUSTOM_SCHEDULE_VALUE) {
+              return;
+            }
+            onChange({ ...value, cronExpression: next });
+          }}
           className="rounded-md border border-input bg-background px-3 py-2 text-sm"
         >
+          <option value={CUSTOM_SCHEDULE_VALUE}>Custom schedule</option>
           {PRESET_SCHEDULES.map((preset) => (
             <option key={preset.cron} value={preset.cron}>
               {preset.label}
@@ -177,6 +190,14 @@ function TaskForm(props: {
           <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5</option>
         </select>
       </div>
+      <input
+        type="text"
+        spellCheck={false}
+        value={value.cronExpression}
+        onChange={(event) => onChange({ ...value, cronExpression: event.target.value })}
+        className="rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
+        placeholder="Cron (e.g. */10 * * * *)"
+      />
       <div className="flex items-center justify-end gap-2">
         <button
           type="button"

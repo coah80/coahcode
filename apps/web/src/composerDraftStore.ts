@@ -40,6 +40,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { useShallow } from "zustand/react/shallow";
 import { createDebouncedStorage, createMemoryStorage } from "./lib/storage";
+import { harnessModelToSurface } from "./lib/harnessComposerSurface";
 import { getDefaultServerModel } from "./providerModels";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
 
@@ -761,11 +762,22 @@ export function deriveEffectiveComposerModelState(input: {
         activeSelection.model,
       )
     : baseModel;
-  const modelOptions =
+  let modelOptions =
     modelSelectionByProviderToOptions(input.draft?.modelSelectionByProvider) ??
     providerModelOptionsFromSelection(input.threadModelSelection) ??
     providerModelOptionsFromSelection(input.projectModelSelection) ??
     null;
+
+  if (input.selectedProvider === "harness") {
+    const { surfaceProvider } = harnessModelToSurface(selectedModel);
+    const fromDraft = input.draft?.modelSelectionByProvider?.[surfaceProvider]?.options;
+    if (fromDraft) {
+      modelOptions = {
+        ...modelOptions,
+        [surfaceProvider]: fromDraft,
+      } as ProviderModelOptions;
+    }
+  }
 
   return {
     selectedModel,

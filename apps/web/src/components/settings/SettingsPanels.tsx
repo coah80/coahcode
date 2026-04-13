@@ -2,6 +2,7 @@ import {
   ArchiveIcon,
   ArchiveX,
   ChevronDownIcon,
+  CircleCheckIcon,
   InfoIcon,
   LoaderIcon,
   PlusIcon,
@@ -502,6 +503,34 @@ export function GeneralSettingsPanel() {
         refreshingRef.current = false;
         setIsRefreshingProviders(false);
       });
+  }, []);
+
+  const copyCliLoginCommand = useCallback((command: string) => {
+    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      toastManager.add({
+        type: "error",
+        title: "Could not copy",
+        description: "Copy the command text manually.",
+      });
+      return;
+    }
+    void navigator.clipboard.writeText(command).then(
+      () => {
+        toastManager.add({
+          type: "success",
+          title: "Command copied",
+          description:
+            "Run it in a terminal on the same machine as the server, press Enter, then tap Refresh status.",
+        });
+      },
+      () => {
+        toastManager.add({
+          type: "error",
+          title: "Could not copy",
+          description: "Copy the command text manually.",
+        });
+      },
+    );
   }, []);
 
   const keybindingsConfigPath = useServerKeybindingsConfigPath();
@@ -1047,6 +1076,11 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          title="CoahCode harness · Claude and Codex subscriptions"
+          description="Set Assistant harness to CoahCode. Claude: use anthropic/… models with no ANTHROPIC_API_KEY (run `claude auth login` or `claude setup-token` + CLAUDE_CODE_OAUTH_TOKEN on the server). Codex: use openai/… models with no OPENAI_API_KEY (run `codex login`). See https://code.claude.com/docs/en/authentication and https://developers.openai.com/codex — then refresh Providers below."
+        />
+
+        <SettingsRow
           title="New threads"
           description="Pick the default workspace mode for newly created draft threads."
           resetAction={
@@ -1417,6 +1451,100 @@ export function GeneralSettingsPanel() {
                             </span>
                           ) : null}
                         </label>
+                      </div>
+                    ) : null}
+
+                    {providerCard.provider === "claudeAgent" ||
+                    providerCard.provider === "codex" ? (
+                      <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+                        <div className="text-xs font-medium text-foreground">
+                          {providerCard.provider === "claudeAgent"
+                            ? "Claude login (native + CoahCode harness)"
+                            : "Codex login (native + CoahCode harness)"}
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {providerCard.provider === "claudeAgent"
+                            ? "Same CLI session powers native Claude threads and harness turns with anthropic/… models. Unset ANTHROPIC_API_KEY on the server if you want subscription instead of Console API keys."
+                            : "Same CLI session powers native Codex threads and harness turns with openai/… models. Unset OPENAI_API_KEY on the server if you want ChatGPT-backed Codex instead of the OpenAI API."}
+                          {providerCard.provider === "codex" && codexHomePath.trim().length > 0
+                            ? ` Use CODEX_HOME=${codexHomePath.trim()} in that shell when you log in so it matches the path above.`
+                            : null}
+                        </p>
+                        {(() => {
+                          const bin =
+                            providerCard.binaryPathValue.trim() ||
+                            (providerCard.provider === "claudeAgent" ? "claude" : "codex");
+                          const loginCmd =
+                            providerCard.provider === "claudeAgent"
+                              ? `${bin} auth login`
+                              : `${bin} login`;
+                          const lp = providerCard.liveProvider;
+                          const isLoggedIn =
+                            lp?.installed === true && lp.auth.status === "authenticated";
+
+                          if (isLoggedIn) {
+                            return (
+                              <div className="mt-2 flex items-center gap-2 text-sm font-medium text-emerald-600 dark:text-emerald-400">
+                                <CircleCheckIcon className="size-4 shrink-0" aria-hidden />
+                                Logged in!
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div className="mt-2 space-y-2">
+                              {!lp?.installed ? (
+                                <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                                  {providerCard.provider === "claudeAgent"
+                                    ? "Install the Claude Code CLI first (for example npm install -g @anthropic-ai/claude-code), then log in."
+                                    : "Install the Codex CLI first, then log in."}
+                                </p>
+                              ) : null}
+                              <div className="rounded-md border border-border bg-muted/30 px-2 py-1.5 font-mono text-[11px] text-foreground">
+                                {loginCmd}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="default"
+                                  onClick={() => copyCliLoginCommand(loginCmd)}
+                                >
+                                  Log in
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => void refreshProviders()}
+                                >
+                                  Refresh status
+                                </Button>
+                              </div>
+                              <p className="text-[11px] text-muted-foreground">
+                                {providerCard.provider === "claudeAgent" ? (
+                                  <a
+                                    className="text-primary underline-offset-2 hover:underline"
+                                    href="https://code.claude.com/docs/en/authentication"
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    Claude Code authentication
+                                  </a>
+                                ) : (
+                                  <a
+                                    className="text-primary underline-offset-2 hover:underline"
+                                    href="https://developers.openai.com/codex"
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    Codex CLI docs
+                                  </a>
+                                )}
+                              </p>
+                            </div>
+                          );
+                        })()}
                       </div>
                     ) : null}
 
@@ -1900,12 +2028,6 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
-      <SettingsSection title="Scheduled Tasks">
-        <div className="px-1">
-          <ScheduledTasks />
-        </div>
-      </SettingsSection>
-
       <SettingsSection title="Workspaces">
         <div className="px-1">
           <WorkspacePicker />
@@ -1945,6 +2067,18 @@ export function GeneralSettingsPanel() {
             </Button>
           }
         />
+      </SettingsSection>
+    </SettingsPageContainer>
+  );
+}
+
+export function ScheduledTasksSettingsPanel() {
+  return (
+    <SettingsPageContainer>
+      <SettingsSection title="Scheduled Tasks" anchorId="scheduled-tasks">
+        <div className="px-1">
+          <ScheduledTasks />
+        </div>
       </SettingsSection>
     </SettingsPageContainer>
   );

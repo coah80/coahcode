@@ -41,12 +41,21 @@ export interface ToolResult {
 
 export type AgentMode = "agent" | "chat" | "plan" | "debug";
 
+export type HarnessUpstreamCredentials =
+  | { readonly kind: "api_key"; readonly apiKey: string; readonly baseURL?: string }
+  | { readonly kind: "claude_subscription"; readonly claudeBinaryPath?: string }
+  | {
+      readonly kind: "openai_subscription";
+      readonly codexBinaryPath?: string;
+      readonly codexHomePath?: string;
+    };
+
 export interface AgentConfig {
   readonly model: string;
   readonly provider: "anthropic" | "openai" | "openrouter";
-  readonly apiKey: string;
-  readonly baseURL?: string | undefined;
+  readonly upstream: HarnessUpstreamCredentials;
   readonly mode: AgentMode;
+  readonly harnessRuntimeMode?: "full-access" | "auto-accept-edits";
   readonly workspaceRoot: string;
   readonly systemPrompt?: string | undefined;
   readonly maxTurns?: number | undefined;

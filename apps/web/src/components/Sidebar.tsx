@@ -5,6 +5,7 @@ import {
   CloudIcon,
   FolderIcon,
   GitPullRequestIcon,
+  CalendarClockIcon,
   HomeIcon,
   PlusIcon,
   SearchIcon,
@@ -147,7 +148,7 @@ import { readEnvironmentApi } from "../environmentApi";
 import { ProjectIconDialog } from "./ProjectIconDialog";
 import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
 import { useServerKeybindings } from "../rpc/serverState";
-import { deriveLogicalProjectKey } from "../logicalProject";
+import { normalizeWorkspaceRootPath, sidebarProjectLogicalKey } from "../logicalProject";
 import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
@@ -155,6 +156,7 @@ import {
 import { workspaceDiscoverQueryOptions } from "~/lib/workspaceReactQuery";
 import type { Project, SidebarThreadSummary } from "../types";
 const THREAD_PREVIEW_LIMIT = 6;
+const pendingAutomaticHomeProjectKeys = new Set<string>();
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -2043,8 +2045,14 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
 
 const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   const navigate = useNavigate();
+  const pathname = useLocation({ select: (loc) => loc.pathname });
+  const isOnScheduled = pathname.startsWith("/settings/scheduled");
+  const isOnSettings = pathname.startsWith("/settings") && !isOnScheduled;
   const handleSettingsClick = useCallback(() => {
     void navigate({ to: "/settings" });
+  }, [navigate]);
+  const handleScheduledClick = useCallback(() => {
+    void navigate({ to: "/settings/scheduled" });
   }, [navigate]);
 
   return (
@@ -2054,6 +2062,18 @@ const SidebarChromeFooter = memo(function SidebarChromeFooter() {
         <SidebarMenuItem>
           <SidebarMenuButton
             size="sm"
+            isActive={isOnScheduled}
+            className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+            onClick={handleScheduledClick}
+          >
+            <CalendarClockIcon className="size-3.5" />
+            <span className="text-xs">Scheduled tasks</span>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            size="sm"
+            isActive={isOnSettings}
             className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
             onClick={handleSettingsClick}
           >
@@ -2566,7 +2586,6 @@ export default function Sidebar() {
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((s) => s.byId);
   const workspaceQuery = useQuery(workspaceDiscoverQueryOptions());
   const homeDir = workspaceQuery.data?.homeDir ?? null;
-  const homeProjectEnsureRequestedRef = useRef(false);
   const orderedProjects = useMemo(() => {
     return orderItemsByPreferredIds({
       items: projects,
@@ -2582,17 +2601,17 @@ export default function Sidebar() {
     const mapping = new Map<string, string>();
     for (const project of orderedProjects) {
       const physicalKey = scopedProjectKey(scopeProjectRef(project.environmentId, project.id));
-      mapping.set(physicalKey, deriveLogicalProjectKey(project));
+      mapping.set(physicalKey, sidebarProjectLogicalKey(project, homeDir));
     }
     return mapping;
-  }, [orderedProjects]);
+  }, [homeDir, orderedProjects]);
 
   const sidebarProjects = useMemo<SidebarProjectSnapshot[]>(() => {
     // Group projects by logical key while preserving insertion order from
     // orderedProjects.
     const groupedMembers = new Map<string, Project[]>();
     for (const project of orderedProjects) {
-      const logicalKey = deriveLogicalProjectKey(project);
+      const logicalKey = sidebarProjectLogicalKey(project, homeDir);
       const existing = groupedMembers.get(logicalKey);
       if (existing) {
         existing.push(project);
@@ -2604,7 +2623,7 @@ export default function Sidebar() {
     const result: SidebarProjectSnapshot[] = [];
     const seen = new Set<string>();
     for (const project of orderedProjects) {
-      const logicalKey = deriveLogicalProjectKey(project);
+      const logicalKey = sidebarProjectLogicalKey(project, homeDir);
       if (seen.has(logicalKey)) continue;
       seen.add(logicalKey);
 
@@ -2636,7 +2655,9 @@ export default function Sidebar() {
         environmentId: representative.environmentId,
         name: representative.name,
         cwd: representative.cwd,
-        isHome: homeDir !== null && representative.cwd === homeDir,
+        isHome:
+          homeDir !== null &&
+          normalizeWorkspaceRootPath(representative.cwd) === normalizeWorkspaceRootPath(homeDir),
         repositoryIdentity: representative.repositoryIdentity ?? null,
         icon: representative.icon ?? null,
         defaultModelSelection: representative.defaultModelSelection,
@@ -2973,14 +2994,21 @@ export default function Sidebar() {
   ]);
 
   useEffect(() => {
+    if (homeDir === null || primaryEnvironmentId === null) {
+      return;
+    }
+    const homeNorm = normalizeWorkspaceRootPath(homeDir);
+    const ensureKey = `${primaryEnvironmentId}\0${homeNorm}`;
     if (
-      homeDir === null ||
-      primaryEnvironmentId === null ||
-      homeProjectEnsureRequestedRef.current ||
       projects.some(
-        (project) => project.environmentId === primaryEnvironmentId && project.cwd === homeDir,
+        (project) =>
+          project.environmentId === primaryEnvironmentId &&
+          normalizeWorkspaceRootPath(project.cwd) === homeNorm,
       )
     ) {
+      return;
+    }
+    if (pendingAutomaticHomeProjectKeys.has(ensureKey)) {
       return;
     }
 
@@ -2989,7 +3017,7 @@ export default function Sidebar() {
       return;
     }
 
-    homeProjectEnsureRequestedRef.current = true;
+    pendingAutomaticHomeProjectKeys.add(ensureKey);
     void api.orchestration
       .dispatchCommand({
         type: "project.create",
@@ -2998,13 +3026,13 @@ export default function Sidebar() {
         title: "Home",
         workspaceRoot: homeDir,
         defaultModelSelection: {
-          provider: "codex",
-          model: DEFAULT_MODEL_BY_PROVIDER.codex,
+          provider: "claudeAgent",
+          model: "claude-opus-4-6",
         },
         createdAt: new Date().toISOString(),
       })
-      .catch(() => {
-        homeProjectEnsureRequestedRef.current = false;
+      .finally(() => {
+        pendingAutomaticHomeProjectKeys.delete(ensureKey);
       });
   }, [homeDir, primaryEnvironmentId, projects]);
   const isManualProjectSorting = sidebarProjectSortOrder === "manual";

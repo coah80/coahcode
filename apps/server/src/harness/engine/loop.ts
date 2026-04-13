@@ -26,6 +26,10 @@ import {
 } from "../tools/scheduledTasks";
 import { streamAnthropic } from "../providers/anthropic";
 import { streamOpenAI } from "../providers/openai";
+import {
+  runClaudeSubscriptionTurn,
+  runCodexSubscriptionTurn,
+} from "../providers/cliSubscriptionTurn";
 import { buildSystemPrompt } from "./prompt";
 import { McpManager, type McpServerConfig } from "../mcp/client";
 import { LspManager } from "../lsp/client";
@@ -113,6 +117,52 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncGenerator<A
   const messages: ConversationMessage[] = [...conversationHistory];
   messages.push({ role: "user", content: userMessage });
 
+  if (config.provider === "anthropic" && config.upstream.kind === "claude_subscription") {
+    for await (const event of runClaudeSubscriptionTurn({
+      model: config.model,
+      cwd: config.workspaceRoot,
+      systemPrompt,
+      conversationHistory,
+      userMessage,
+      signal,
+      claudeBinaryPath: config.upstream.claudeBinaryPath,
+      mode: config.mode,
+      harnessRuntimeMode: config.harnessRuntimeMode ?? "auto-accept-edits",
+    })) {
+      yield event;
+    }
+    await mcpManager.closeAll();
+    return;
+  }
+
+  if (config.provider === "openai" && config.upstream.kind === "openai_subscription") {
+    for await (const event of runCodexSubscriptionTurn({
+      model: config.model,
+      cwd: config.workspaceRoot,
+      systemPrompt,
+      conversationHistory,
+      userMessage,
+      signal,
+      codexBinaryPath: config.upstream.codexBinaryPath,
+      codexHomePath: config.upstream.codexHomePath,
+    })) {
+      yield event;
+    }
+    await mcpManager.closeAll();
+    return;
+  }
+
+  if (config.upstream.kind !== "api_key") {
+    yield {
+      type: "error",
+      error: "Harness API routing needs an API key for this model provider.",
+    };
+    await mcpManager.closeAll();
+    return;
+  }
+
+  const apiUpstream = config.upstream;
+
   let turnNumber = 0;
   const editedFiles: Set<string> = new Set();
   let nudgeState = createNudgeState();
@@ -134,8 +184,8 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncGenerator<A
       config.provider === "anthropic"
         ? streamAnthropic({
             model: config.model,
-            apiKey: config.apiKey,
-            ...(config.baseURL ? { baseURL: config.baseURL } : {}),
+            apiKey: apiUpstream.apiKey,
+            ...(apiUpstream.baseURL ? { baseURL: apiUpstream.baseURL } : {}),
             messages,
             tools: allTools,
             systemPrompt,
@@ -144,9 +194,9 @@ export async function* runAgentLoop(options: AgentLoopOptions): AsyncGenerator<A
           })
         : streamOpenAI({
             model: config.model,
-            apiKey: config.apiKey,
+            apiKey: apiUpstream.apiKey,
             baseURL:
-              config.baseURL ??
+              apiUpstream.baseURL ??
               (config.provider === "openrouter"
                 ? "https://openrouter.ai/api/v1"
                 : "https://api.openai.com/v1"),

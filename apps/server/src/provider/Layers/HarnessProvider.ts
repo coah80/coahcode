@@ -92,7 +92,14 @@ const makeHarnessProvider = Effect.gen(function* () {
 
   const checkProvider = Effect.gen(function* () {
     const harnessSettings = yield* getHarnessSettings;
-    const probe = yield* Effect.tryPromise(() => readHarnessProbe(process.cwd())).pipe(
+    const cliSettings = yield* serverSettings.getSettings;
+    const probe = yield* Effect.tryPromise(() =>
+      readHarnessProbe(process.cwd(), {
+        claudeBinaryPath: cliSettings.providers.claudeAgent.binaryPath,
+        codexBinaryPath: cliSettings.providers.codex.binaryPath,
+        codexHomePath: cliSettings.providers.codex.homePath,
+      }),
+    ).pipe(
       Effect.catch(() =>
         Effect.succeed({
           status: "error" as const,

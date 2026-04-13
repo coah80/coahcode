@@ -1,12 +1,4 @@
-import {
-  DEFAULT_MODEL_BY_PROVIDER,
-  type ProviderKind,
-  type ProviderRuntimeEvent,
-  type ProviderSendTurnInput,
-  type ProviderSession,
-  type ProviderSessionStartInput,
-  type ThreadId,
-} from "@t3tools/contracts";
+import type { ProviderKind, ProviderRuntimeEvent, ProviderSession, ThreadId } from "@t3tools/contracts";
 import { Effect, Stream } from "effect";
 
 import type { ServerSettingsShape } from "../../serverSettings";
@@ -17,53 +9,21 @@ import {
 } from "../Errors";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter";
 import type { HarnessAdapterShape } from "../Services/HarnessAdapter";
-import { resolveHarnessUpstreamAuth, type HarnessUpstreamProvider } from "./harnessRuntime";
+import {
+  harnessUpstreamForRoutable,
+  resolveHarnessUpstreamAuth,
+  routableSessionModelSelectionToHarness,
+  stripRoutableHarnessModelPrefix,
+} from "./harnessRuntime";
 
 type RoutedBackend = "native" | "coahcode";
 type RoutedProvider = Extract<ProviderKind, "codex" | "claudeAgent">;
-
-function harnessUpstreamForProvider(provider: RoutedProvider): HarnessUpstreamProvider {
-  return provider === "codex" ? "openai" : "anthropic";
-}
-
-function toHarnessModel(provider: RoutedProvider, model: string): string {
-  if (model.includes("/")) {
-    return model;
-  }
-
-  return `${harnessUpstreamForProvider(provider)}/${model}`;
-}
-
-function toHarnessModelSelection(
-  provider: RoutedProvider,
-  selection: ProviderSessionStartInput["modelSelection"] | ProviderSendTurnInput["modelSelection"],
-) {
-  return {
-    provider: "harness" as const,
-    model: toHarnessModel(
-      provider,
-      selection?.model?.trim() || DEFAULT_MODEL_BY_PROVIDER[provider],
-    ),
-  };
-}
-
-function stripHarnessModelPrefix(
-  provider: RoutedProvider,
-  model: string | undefined,
-): string | undefined {
-  if (!model) {
-    return model;
-  }
-
-  const upstream = harnessUpstreamForProvider(provider);
-  return model.startsWith(`${upstream}/`) ? model.slice(upstream.length + 1) : model;
-}
 
 function rewriteSession(provider: RoutedProvider, session: ProviderSession): ProviderSession {
   return {
     ...session,
     provider,
-    ...(session.model ? { model: stripHarnessModelPrefix(provider, session.model) } : {}),
+    ...(session.model ? { model: stripRoutableHarnessModelPrefix(provider, session.model) } : {}),
   };
 }
 
@@ -83,7 +43,7 @@ function rewriteHarnessEvent(
     const config = event.payload.config as Record<string, unknown>;
     const nextModel =
       typeof config.model === "string"
-        ? stripHarnessModelPrefix(provider, config.model)
+        ? stripRoutableHarnessModelPrefix(provider, config.model)
         : undefined;
     return {
       ...event,
@@ -117,10 +77,10 @@ export function makeRoutedProviderAdapter(input: {
     readonly cwd?: string;
   }) =>
     Effect.gen(function* () {
-      const harnessMode = yield* input.serverSettings.getSettings.pipe(
-        Effect.map((settings) => settings.assistantHarnessMode),
-        Effect.orElseSucceed(() => "native" as const),
+      const settings = yield* input.serverSettings.getSettings.pipe(
+        Effect.orElseSucceed(() => undefined),
       );
+      const harnessMode = settings?.assistantHarnessMode ?? "native";
       if (harnessMode !== "coahcode") {
         return "native" as const;
       }
@@ -128,7 +88,14 @@ export function makeRoutedProviderAdapter(input: {
       const auth = yield* Effect.tryPromise(() =>
         resolveHarnessUpstreamAuth({
           workspaceRoot: startInput.cwd ?? process.cwd(),
-          upstream: harnessUpstreamForProvider(input.provider),
+          upstream: harnessUpstreamForRoutable(input.provider),
+          ...(settings
+            ? {
+                claudeBinaryPath: settings.providers.claudeAgent.binaryPath,
+                codexBinaryPath: settings.providers.codex.binaryPath,
+                codexHomePath: settings.providers.codex.homePath,
+              }
+            : {}),
         }),
       ).pipe(Effect.orElseSucceed(() => undefined));
 
@@ -180,7 +147,10 @@ export function makeRoutedProviderAdapter(input: {
         .startSession({
           ...startInput,
           provider: "harness",
-          modelSelection: toHarnessModelSelection(input.provider, startInput.modelSelection),
+          modelSelection: routableSessionModelSelectionToHarness(
+            input.provider,
+            startInput.modelSelection,
+          ),
         })
         .pipe(
           Effect.mapError(
@@ -208,7 +178,12 @@ export function makeRoutedProviderAdapter(input: {
         .sendTurn({
           ...turnInput,
           ...(turnInput.modelSelection
-            ? { modelSelection: toHarnessModelSelection(input.provider, turnInput.modelSelection) }
+            ? {
+                modelSelection: routableSessionModelSelectionToHarness(
+                  input.provider,
+                  turnInput.modelSelection,
+                ),
+              }
             : {}),
         })
         .pipe(

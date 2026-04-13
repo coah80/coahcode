@@ -20,14 +20,16 @@ export function SettingsSection({
   icon,
   headerAction,
   children,
+  anchorId,
 }: {
   title: string;
   icon?: ReactNode;
   headerAction?: ReactNode;
   children: ReactNode;
+  anchorId?: string;
 }) {
   return (
-    <section className="space-y-2.5">
+    <section id={anchorId} className="space-y-2.5">
       <div className="flex items-center justify-between px-1">
         <h2 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-foreground/50">
           <span className="inline-block h-px w-3 bg-border" aria-hidden />

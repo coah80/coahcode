@@ -165,6 +165,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
         codexSettings?.binaryPath || "codex",
         [
           "exec",
+          "--skip-git-repo-check",
           "--ephemeral",
           "-s",
           "read-only",

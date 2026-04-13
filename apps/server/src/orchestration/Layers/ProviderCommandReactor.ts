@@ -451,7 +451,7 @@ const make = Effect.gen(function* () {
               model: activeSession.model,
             }
           : requestedModelSelection
-        : input.modelSelection;
+        : (input.modelSelection ?? requestedModelSelection);
 
     yield* providerService.sendTurn({
       threadId: input.threadId,

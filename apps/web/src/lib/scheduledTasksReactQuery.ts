@@ -15,6 +15,8 @@ export function scheduledTasksListQueryOptions() {
       return api.scheduledTasks.list();
     },
     staleTime: 5000,
+    refetchInterval: 12_000,
+    refetchOnWindowFocus: true,
   });
 }
 

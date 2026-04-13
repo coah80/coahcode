@@ -60,7 +60,11 @@ import {
 } from "../composerFooterLayout";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
 import { AVAILABLE_PROVIDER_OPTIONS, ProviderModelPicker } from "./ProviderModelPicker";
-import { ModelSwitcher } from "./ModelSwitcher";
+import {
+  type HarnessSurfaceProvider,
+  harnessModelToSurface,
+  surfaceModelToHarness,
+} from "../../lib/harnessComposerSurface";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
@@ -570,6 +574,16 @@ export const ChatComposer = memo(
       settings,
     });
 
+    const harnessSurface = useMemo(
+      () => (selectedProvider === "harness" ? harnessModelToSurface(selectedModel) : null),
+      [selectedModel, selectedProvider],
+    );
+    const composerCapabilitiesProvider = harnessSurface?.surfaceProvider ?? selectedProvider;
+    const composerCapabilitiesModel = harnessSurface?.surfaceModel ?? selectedModel;
+    const composerCapabilitiesModels = getProviderModels(
+      providerStatuses,
+      composerCapabilitiesProvider,
+    );
     const selectedProviderModels = getProviderModels(providerStatuses, selectedProvider);
     const selectedProviderStatus = useMemo(
       () => providerStatuses.find((provider) => provider.provider === selectedProvider),
@@ -579,26 +593,35 @@ export const ChatComposer = memo(
     const composerProviderState = useMemo(
       () =>
         getComposerProviderState({
-          provider: selectedProvider,
-          model: selectedModel,
-          models: selectedProviderModels,
+          provider: composerCapabilitiesProvider,
+          model: composerCapabilitiesModel,
+          models: composerCapabilitiesModels,
           prompt,
           modelOptions: composerModelOptions,
         }),
-      [composerModelOptions, prompt, selectedModel, selectedProvider, selectedProviderModels],
+      [
+        composerCapabilitiesModel,
+        composerCapabilitiesModels,
+        composerCapabilitiesProvider,
+        composerModelOptions,
+        prompt,
+      ],
     );
 
     const selectedPromptEffort = composerProviderState.promptEffort;
     const selectedModelOptionsForDispatch = composerProviderState.modelOptionsForDispatch;
-    const selectedModelSelection = useMemo<ModelSelection>(
-      () => ({
+    const selectedModelSelection = useMemo<ModelSelection>(() => {
+      if (selectedProvider === "harness") {
+        return { provider: "harness", model: selectedModel };
+      }
+      return {
         provider: selectedProvider,
         model: selectedModel,
         ...(selectedModelOptionsForDispatch ? { options: selectedModelOptionsForDispatch } : {}),
-      }),
-      [selectedModel, selectedModelOptionsForDispatch, selectedProvider],
-    );
-    const selectedModelForPicker = selectedModel;
+      };
+    }, [selectedModel, selectedModelOptionsForDispatch, selectedProvider]);
+    const modelPickerProvider = harnessSurface?.surfaceProvider ?? selectedProvider;
+    const modelPickerModel = harnessSurface?.surfaceModel ?? selectedModel;
     const modelOptionsByProvider = useMemo<
       Record<ProviderKind, ReadonlyArray<ServerProvider["models"][number]>>
     >(
@@ -611,11 +634,31 @@ export const ChatComposer = memo(
       [providerStatuses],
     );
     const selectedModelForPickerWithCustomFallback = useMemo(() => {
-      const currentOptions = modelOptionsByProvider[selectedProvider];
-      return currentOptions.some((option) => option.slug === selectedModelForPicker)
-        ? selectedModelForPicker
-        : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ?? selectedModelForPicker);
-    }, [modelOptionsByProvider, selectedModelForPicker, selectedProvider]);
+      const currentOptions = modelOptionsByProvider[modelPickerProvider];
+      return currentOptions.some((option) => option.slug === modelPickerModel)
+        ? modelPickerModel
+        : (normalizeModelSlug(modelPickerModel, modelPickerProvider) ?? modelPickerModel);
+    }, [modelOptionsByProvider, modelPickerModel, modelPickerProvider]);
+    const pickerLockedProvider =
+      lockedProvider === "harness" && harnessSurface
+        ? harnessSurface.surfaceProvider
+        : lockedProvider;
+    const handleProviderModelChangeFromPicker = useCallback(
+      (provider: ProviderKind, model: string) => {
+        if (selectedProvider === "harness") {
+          if (provider !== "codex" && provider !== "claudeAgent") {
+            return;
+          }
+          onProviderModelSelect(
+            "harness",
+            surfaceModelToHarness(provider as HarnessSurfaceProvider, model),
+          );
+        } else {
+          onProviderModelSelect(provider, model);
+        }
+      },
+      [onProviderModelSelect, selectedProvider],
+    );
     const searchableModelOptions = useMemo(
       () =>
         AVAILABLE_PROVIDER_OPTIONS.filter(
@@ -896,22 +939,22 @@ export const ChatComposer = memo(
     );
 
     const providerTraitsMenuContent = renderProviderTraitsMenuContent({
-      provider: selectedProvider,
+      provider: composerCapabilitiesProvider,
       ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
       ...(routeKind === "draft" && draftId ? { draftId } : {}),
-      model: selectedModel,
-      models: selectedProviderModels,
-      modelOptions: composerModelOptions?.[selectedProvider],
+      model: composerCapabilitiesModel,
+      models: composerCapabilitiesModels,
+      modelOptions: composerModelOptions?.[composerCapabilitiesProvider],
       prompt,
       onPromptChange: setPromptFromTraits,
     });
     const providerTraitsPicker = renderProviderTraitsPicker({
-      provider: selectedProvider,
+      provider: composerCapabilitiesProvider,
       ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
       ...(routeKind === "draft" && draftId ? { draftId } : {}),
-      model: selectedModel,
-      models: selectedProviderModels,
-      modelOptions: composerModelOptions?.[selectedProvider],
+      model: composerCapabilitiesModel,
+      models: composerCapabilitiesModels,
+      modelOptions: composerModelOptions?.[composerCapabilitiesProvider],
       prompt,
       onPromptChange: setPromptFromTraits,
     });
@@ -1919,30 +1962,21 @@ export const ChatComposer = memo(
                 )}
               >
                 <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                  {selectedProvider === "harness" ? (
-                    <ModelSwitcher
-                      currentModel={selectedModelForPickerWithCustomFallback}
-                      isRunning={phase === "running"}
-                      models={selectedProviderModels}
-                      onSwitch={(modelId) => onProviderModelSelect("harness", modelId)}
-                    />
-                  ) : (
-                    <ProviderModelPicker
-                      compact={isComposerFooterCompact}
-                      provider={selectedProvider}
-                      model={selectedModelForPickerWithCustomFallback}
-                      lockedProvider={lockedProvider}
-                      providers={providerStatuses}
-                      modelOptionsByProvider={modelOptionsByProvider}
-                      {...(composerProviderState.modelPickerIconClassName
-                        ? {
-                            activeProviderIconClassName:
-                              composerProviderState.modelPickerIconClassName,
-                          }
-                        : {})}
-                      onProviderModelChange={onProviderModelSelect}
-                    />
-                  )}
+                  <ProviderModelPicker
+                    compact={isComposerFooterCompact}
+                    provider={modelPickerProvider}
+                    model={selectedModelForPickerWithCustomFallback}
+                    lockedProvider={pickerLockedProvider}
+                    providers={providerStatuses}
+                    modelOptionsByProvider={modelOptionsByProvider}
+                    {...(composerProviderState.modelPickerIconClassName
+                      ? {
+                          activeProviderIconClassName:
+                            composerProviderState.modelPickerIconClassName,
+                        }
+                      : {})}
+                    onProviderModelChange={handleProviderModelChangeFromPicker}
+                  />
 
                   {isComposerFooterCompact ? (
                     <CompactComposerControlsMenu

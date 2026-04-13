@@ -32,117 +32,123 @@ export const startScheduledTaskRunner = Effect.acquireRelease(
       readonly prompt: string;
       readonly workspacePath: string;
       readonly model: string;
-    }) =>
-      Effect.gen(function* () {
+    }) => {
+      const runState = { shouldMark: false };
+      return Effect.gen(function* () {
         if (runningTaskIds.has(task.id)) {
           return;
         }
         runningTaskIds.add(task.id);
 
-        const startedAt = Date.now();
-        const marked = yield* scheduledTasks.markRun(task.id, startedAt);
-        if (!marked) {
-          yield* Effect.logWarning("scheduled task disappeared before execution", {
-            taskId: task.id,
-            name: task.name,
-          });
-          return;
-        }
-
-        const harnessSettings = yield* serverSettings.getSettings.pipe(
-          Effect.map((settings) => settings.providers.harness),
-        );
-        const parsedModel = parseHarnessModel(task.model);
-        const upstreamAuth = yield* Effect.tryPromise(() =>
-          resolveHarnessUpstreamAuth({
-            workspaceRoot: task.workspacePath,
-            upstream: parsedModel.upstream,
-          }),
-        );
-
-        if (!upstreamAuth) {
-          yield* Effect.logWarning("scheduled task skipped because upstream auth is missing", {
-            taskId: task.id,
-            name: task.name,
-            upstream: parsedModel.upstream,
-          });
-          return;
-        }
-
-        const mcpConfigs = yield* Effect.tryPromise(() =>
-          resolveHarnessMcpConfigs({
-            workspaceRoot: task.workspacePath,
-            servers: harnessSettings.mcpServers,
-          }),
-        );
-        const lspManager = createHarnessLspManager(harnessSettings);
-        let assistantText = "";
-        let taskError: string | null = null;
-
-        yield* Effect.acquireUseRelease(
-          Effect.succeed(lspManager),
-          (managedLspManager) =>
-            Effect.tryPromise({
-              try: async () => {
-                for await (const event of runAgentLoop({
-                  config: {
-                    model: parsedModel.model,
-                    provider: parsedModel.upstream,
-                    apiKey: upstreamAuth.apiKey,
-                    ...(upstreamAuth.baseURL ? { baseURL: upstreamAuth.baseURL } : {}),
-                    mode: "agent",
-                    workspaceRoot: task.workspacePath,
-                  },
-                  userMessage: task.prompt,
-                  ...(mcpConfigs.length > 0 ? { mcpConfigs } : {}),
-                  ...(managedLspManager ? { lspManager: managedLspManager } : {}),
-                })) {
-                  if (event.type === "text_delta") {
-                    assistantText += event.text;
-                  } else if (event.type === "error") {
-                    taskError = event.error;
-                  }
-                }
-              },
-              catch: (cause) =>
-                new ScheduledTaskRunnerError({
-                  detail: "Scheduled task execution failed.",
-                  cause,
-                }),
+        yield* Effect.gen(function* () {
+          const unifiedSettings = yield* serverSettings.getSettings;
+          const harnessSettings = unifiedSettings.providers.harness;
+          const parsedModel = parseHarnessModel(task.model);
+          const upstreamAuth = yield* Effect.tryPromise(() =>
+            resolveHarnessUpstreamAuth({
+              workspaceRoot: task.workspacePath,
+              upstream: parsedModel.upstream,
+              claudeBinaryPath: unifiedSettings.providers.claudeAgent.binaryPath,
+              codexBinaryPath: unifiedSettings.providers.codex.binaryPath,
+              codexHomePath: unifiedSettings.providers.codex.homePath,
             }),
-          (managedLspManager) =>
-            Effect.promise(() => managedLspManager?.closeAll() ?? Promise.resolve()),
-        );
+          );
 
-        if (taskError) {
-          yield* Effect.logError("scheduled task execution failed", {
+          if (!upstreamAuth) {
+            yield* Effect.logWarning("scheduled task skipped because upstream auth is missing", {
+              taskId: task.id,
+              name: task.name,
+              upstream: parsedModel.upstream,
+            });
+            return;
+          }
+
+          runState.shouldMark = true;
+
+          const mcpConfigs = yield* Effect.tryPromise(() =>
+            resolveHarnessMcpConfigs({
+              workspaceRoot: task.workspacePath,
+              servers: harnessSettings.mcpServers,
+            }),
+          );
+          const lspManager = createHarnessLspManager(harnessSettings);
+          let assistantText = "";
+          let taskError: string | null = null;
+
+          yield* Effect.acquireUseRelease(
+            Effect.succeed(lspManager),
+            (managedLspManager) =>
+              Effect.tryPromise({
+                try: async () => {
+                  for await (const event of runAgentLoop({
+                    config: {
+                      model: parsedModel.model,
+                      provider: parsedModel.upstream,
+                      upstream: upstreamAuth,
+                      mode: "agent",
+                      harnessRuntimeMode: "auto-accept-edits",
+                      workspaceRoot: task.workspacePath,
+                    },
+                    userMessage: task.prompt,
+                    ...(mcpConfigs.length > 0 ? { mcpConfigs } : {}),
+                    ...(managedLspManager ? { lspManager: managedLspManager } : {}),
+                  })) {
+                    if (event.type === "text_delta") {
+                      assistantText += event.text;
+                    } else if (event.type === "error") {
+                      taskError = event.error;
+                    }
+                  }
+                },
+                catch: (cause) =>
+                  new ScheduledTaskRunnerError({
+                    detail: "Scheduled task execution failed.",
+                    cause,
+                  }),
+              }),
+            (managedLspManager) =>
+              Effect.promise(() => managedLspManager?.closeAll() ?? Promise.resolve()),
+          );
+
+          if (taskError) {
+            yield* Effect.logError("scheduled task execution failed", {
+              taskId: task.id,
+              name: task.name,
+              error: taskError,
+            });
+            return;
+          }
+
+          yield* Effect.logInfo("scheduled task execution completed", {
             taskId: task.id,
             name: task.name,
-            error: taskError,
+            responsePreview:
+              assistantText.trim().length > 0 ? assistantText.trim().slice(0, 500) : undefined,
           });
-          return;
-        }
-
-        yield* Effect.logInfo("scheduled task execution completed", {
-          taskId: task.id,
-          name: task.name,
-          responsePreview:
-            assistantText.trim().length > 0 ? assistantText.trim().slice(0, 500) : undefined,
-        });
-      }).pipe(
-        Effect.catch((cause) =>
-          Effect.logError("scheduled task runner failed", {
-            taskId: task.id,
-            name: task.name,
-            cause,
-          }),
-        ),
-        Effect.ensuring(
-          Effect.sync(() => {
-            runningTaskIds.delete(task.id);
-          }),
-        ),
-      );
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.logError("scheduled task runner failed", {
+              taskId: task.id,
+              name: task.name,
+              cause,
+            }),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              runningTaskIds.delete(task.id);
+            }).pipe(
+              Effect.andThen(() =>
+                runState.shouldMark
+                  ? scheduledTasks
+                      .markRun(task.id, Date.now())
+                      .pipe(Effect.asVoid, Effect.ignore({ log: true }))
+                  : Effect.void,
+              ),
+            ),
+          ),
+        );
+      });
+    };
 
     const scanTasks = Effect.gen(function* () {
       const tasks = yield* scheduledTasks.list;
