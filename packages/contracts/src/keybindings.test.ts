@@ -41,11 +41,23 @@ it.effect("parses keybinding rules", () =>
     });
     assert.strictEqual(parsedDiffToggle.command, "diff.toggle");
 
+    const parsedCommandPalette = yield* decode(KeybindingRule, {
+      key: "mod+k",
+      command: "commandPalette.toggle",
+    });
+    assert.strictEqual(parsedCommandPalette.command, "commandPalette.toggle");
+
     const parsedLocal = yield* decode(KeybindingRule, {
       key: "mod+shift+n",
       command: "chat.newLocal",
     });
     assert.strictEqual(parsedLocal.command, "chat.newLocal");
+
+    const parsedThreadPrevious = yield* decode(KeybindingRule, {
+      key: "mod+shift+[",
+      command: "thread.previous",
+    });
+    assert.strictEqual(parsedThreadPrevious.command, "thread.previous");
   }),
 );
 
@@ -120,8 +132,19 @@ it.effect("parses resolved keybindings arrays", () =>
           modKey: true,
         },
       },
+      {
+        command: "thread.jump.3",
+        shortcut: {
+          key: "3",
+          metaKey: false,
+          ctrlKey: false,
+          shiftKey: false,
+          altKey: false,
+          modKey: true,
+        },
+      },
     ]);
-    assert.lengthOf(parsed, 1);
+    assert.lengthOf(parsed, 2);
   }),
 );
 

@@ -11,6 +11,7 @@ import {
   ProjectId,
   ProviderKind,
   ThreadId,
+  ModelSelection,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect, Option, Schema } from "effect";
@@ -29,14 +30,13 @@ import type {
 } from "../src/orchestration/Services/RuntimeReceiptBus.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
-const asMessageId = (value: string): MessageId => MessageId.makeUnsafe(value);
-const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
-const asEventId = (value: string): EventId => EventId.makeUnsafe(value);
-const asApprovalRequestId = (value: string): ApprovalRequestId =>
-  ApprovalRequestId.makeUnsafe(value);
+const asMessageId = (value: string): MessageId => MessageId.make(value);
+const asProjectId = (value: string): ProjectId => ProjectId.make(value);
+const asEventId = (value: string): EventId => EventId.make(value);
+const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
 
 const PROJECT_ID = asProjectId("project-1");
-const THREAD_ID = ThreadId.makeUnsafe("thread-1");
+const THREAD_ID = ThreadId.make("thread-1");
 const FIXTURE_TURN_ID = "fixture-turn";
 const APPROVAL_REQUEST_ID = asApprovalRequestId("req-approval-1");
 type IntegrationProvider = ProviderKind;
@@ -56,7 +56,7 @@ function waitForSync<A>(
   read: () => A,
   predicate: (value: A) => boolean,
   description: string,
-  timeoutMs = 3000,
+  timeoutMs = 10_000,
 ): Effect.Effect<A, never> {
   return Effect.gen(function* () {
     const deadline = Date.now() + timeoutMs;
@@ -111,21 +111,27 @@ const seedProjectAndThread = (harness: OrchestrationIntegrationHarness) =>
 
     yield* harness.engine.dispatch({
       type: "project.create",
-      commandId: CommandId.makeUnsafe("cmd-project-create"),
+      commandId: CommandId.make("cmd-project-create"),
       projectId: PROJECT_ID,
       title: "Integration Project",
       workspaceRoot: harness.workspaceDir,
-      defaultModel,
+      defaultModelSelection: {
+        provider,
+        model: defaultModel,
+      },
       createdAt,
     });
 
     yield* harness.engine.dispatch({
       type: "thread.create",
-      commandId: CommandId.makeUnsafe("cmd-thread-create"),
+      commandId: CommandId.make("cmd-thread-create"),
       threadId: THREAD_ID,
       projectId: PROJECT_ID,
       title: "Integration Thread",
-      model: defaultModel,
+      modelSelection: {
+        provider,
+        model: defaultModel,
+      },
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       runtimeMode: "approval-required",
       branch: null,
@@ -139,11 +145,11 @@ const startTurn = (input: {
   readonly commandId: string;
   readonly messageId: string;
   readonly text: string;
-  readonly provider?: IntegrationProvider;
+  readonly modelSelection?: ModelSelection;
 }) =>
   input.harness.engine.dispatch({
     type: "thread.turn.start",
-    commandId: CommandId.makeUnsafe(input.commandId),
+    commandId: CommandId.make(input.commandId),
     threadId: THREAD_ID,
     message: {
       messageId: asMessageId(input.messageId),
@@ -151,7 +157,11 @@ const startTurn = (input: {
       text: input.text,
       attachments: [],
     },
-    ...(input.provider !== undefined ? { provider: input.provider } : {}),
+    ...(input.modelSelection !== undefined
+      ? {
+          modelSelection: input.modelSelection,
+        }
+      : {}),
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     runtimeMode: "approval-required",
     createdAt: nowIso(),
@@ -250,21 +260,27 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
 
         yield* harness.engine.dispatch({
           type: "project.create",
-          commandId: CommandId.makeUnsafe("cmd-project-create-real-codex"),
+          commandId: CommandId.make("cmd-project-create-real-codex"),
           projectId: PROJECT_ID,
           title: "Integration Project",
           workspaceRoot: harness.workspaceDir,
-          defaultModel: "gpt-5.3-codex",
+          defaultModelSelection: {
+            provider: "codex",
+            model: "gpt-5.3-codex",
+          },
           createdAt,
         });
 
         yield* harness.engine.dispatch({
           type: "thread.create",
-          commandId: CommandId.makeUnsafe("cmd-thread-create-real-codex"),
+          commandId: CommandId.make("cmd-thread-create-real-codex"),
           threadId: THREAD_ID,
           projectId: PROJECT_ID,
           title: "Integration Thread",
-          model: "gpt-5.3-codex",
+          modelSelection: {
+            provider: "codex",
+            model: "gpt-5.3-codex",
+          },
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "full-access",
           branch: null,
@@ -274,7 +290,7 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
 
         yield* harness.engine.dispatch({
           type: "thread.turn.start",
-          commandId: CommandId.makeUnsafe("cmd-turn-start-real-codex-1"),
+          commandId: CommandId.make("cmd-turn-start-real-codex-1"),
           threadId: THREAD_ID,
           message: {
             messageId: asMessageId("msg-real-codex-1"),
@@ -301,7 +317,7 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
 
         yield* harness.engine.dispatch({
           type: "thread.turn.start",
-          commandId: CommandId.makeUnsafe("cmd-turn-start-real-codex-2"),
+          commandId: CommandId.make("cmd-turn-start-real-codex-2"),
           threadId: THREAD_ID,
           message: {
             messageId: asMessageId("msg-real-codex-2"),
@@ -566,7 +582,7 @@ it.live("tracks approval requests and resolves pending approvals on user respons
 
       yield* harness.engine.dispatch({
         type: "thread.approval.respond",
-        commandId: CommandId.makeUnsafe("cmd-approval-respond"),
+        commandId: CommandId.make("cmd-approval-respond"),
         threadId: THREAD_ID,
         requestId: APPROVAL_REQUEST_ID,
         decision: "accept",
@@ -798,7 +814,7 @@ it.live("reverts to an earlier checkpoint and trims checkpoint projections + git
 
       yield* harness.engine.dispatch({
         type: "thread.checkpoint.revert",
-        commandId: CommandId.makeUnsafe("cmd-checkpoint-revert"),
+        commandId: CommandId.make("cmd-checkpoint-revert"),
         threadId: THREAD_ID,
         turnCount: 1,
         createdAt: nowIso(),
@@ -858,7 +874,7 @@ it.live(
 
         yield* harness.engine.dispatch({
           type: "thread.checkpoint.revert",
-          commandId: CommandId.makeUnsafe("cmd-checkpoint-revert-no-session"),
+          commandId: CommandId.make("cmd-checkpoint-revert-no-session"),
           threadId: THREAD_ID,
           turnCount: 0,
           createdAt: nowIso(),
@@ -922,7 +938,10 @@ it.live("starts a claudeAgent session on first turn when provider is requested",
           commandId: "cmd-turn-start-claude-initial",
           messageId: "msg-user-claude-initial",
           text: "Use Claude",
-          provider: "claudeAgent",
+          modelSelection: {
+            provider: "claudeAgent",
+            model: "claude-sonnet-4-6",
+          },
         });
 
         const thread = yield* harness.waitForThread(
@@ -976,7 +995,10 @@ it.live("recovers claudeAgent sessions after provider stopAll using persisted re
           commandId: "cmd-turn-start-claude-recover-1",
           messageId: "msg-user-claude-recover-1",
           text: "Before restart",
-          provider: "claudeAgent",
+          modelSelection: {
+            provider: "claudeAgent",
+            model: "claude-sonnet-4-6",
+          },
         });
 
         yield* harness.waitForThread(
@@ -1083,7 +1105,10 @@ it.live("forwards claudeAgent approval responses to the provider session", () =>
           commandId: "cmd-turn-start-claude-approval",
           messageId: "msg-user-claude-approval",
           text: "Need approval",
-          provider: "claudeAgent",
+          modelSelection: {
+            provider: "claudeAgent",
+            model: "claude-sonnet-4-6",
+          },
         });
 
         const thread = yield* harness.waitForThread(THREAD_ID, (entry) =>
@@ -1093,7 +1118,7 @@ it.live("forwards claudeAgent approval responses to the provider session", () =>
 
         yield* harness.engine.dispatch({
           type: "thread.approval.respond",
-          commandId: CommandId.makeUnsafe("cmd-claude-approval-respond"),
+          commandId: CommandId.make("cmd-claude-approval-respond"),
           threadId: THREAD_ID,
           requestId: APPROVAL_REQUEST_ID,
           decision: "accept",
@@ -1152,7 +1177,10 @@ it.live("forwards thread.turn.interrupt to claudeAgent provider sessions", () =>
           commandId: "cmd-turn-start-claude-interrupt",
           messageId: "msg-user-claude-interrupt",
           text: "Start long turn",
-          provider: "claudeAgent",
+          modelSelection: {
+            provider: "claudeAgent",
+            model: "claude-sonnet-4-6",
+          },
         });
 
         const thread = yield* harness.waitForThread(
@@ -1163,7 +1191,7 @@ it.live("forwards thread.turn.interrupt to claudeAgent provider sessions", () =>
 
         yield* harness.engine.dispatch({
           type: "thread.turn.interrupt",
-          commandId: CommandId.makeUnsafe("cmd-turn-interrupt-claude"),
+          commandId: CommandId.make("cmd-turn-interrupt-claude"),
           threadId: THREAD_ID,
           createdAt: nowIso(),
         });
@@ -1222,7 +1250,10 @@ it.live("reverts claudeAgent turns and rolls back provider conversation state", 
           commandId: "cmd-turn-start-claude-revert-1",
           messageId: "msg-user-claude-revert-1",
           text: "First Claude edit",
-          provider: "claudeAgent",
+          modelSelection: {
+            provider: "claudeAgent",
+            model: "claude-sonnet-4-6",
+          },
         });
 
         yield* harness.waitForThread(
@@ -1277,7 +1308,7 @@ it.live("reverts claudeAgent turns and rolls back provider conversation state", 
 
         yield* harness.engine.dispatch({
           type: "thread.checkpoint.revert",
-          commandId: CommandId.makeUnsafe("cmd-checkpoint-revert-claude"),
+          commandId: CommandId.make("cmd-checkpoint-revert-claude"),
           threadId: THREAD_ID,
           turnCount: 1,
           createdAt: nowIso(),

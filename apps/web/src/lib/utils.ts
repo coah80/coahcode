@@ -3,6 +3,7 @@ import { type CxOptions, cx } from "class-variance-authority";
 import { twMerge } from "tailwind-merge";
 import * as Random from "effect/Random";
 import * as Effect from "effect/Effect";
+import { DraftId } from "../composerDraftStore";
 
 export function cn(...inputs: CxOptions) {
   return twMerge(cx(inputs));
@@ -27,10 +28,12 @@ export function randomUUID(): string {
   return Effect.runSync(Random.nextUUIDv4);
 }
 
-export const newCommandId = (): CommandId => CommandId.makeUnsafe(randomUUID());
+export const newCommandId = (): CommandId => CommandId.make(randomUUID());
 
-export const newProjectId = (): ProjectId => ProjectId.makeUnsafe(randomUUID());
+export const newProjectId = (): ProjectId => ProjectId.make(randomUUID());
 
-export const newThreadId = (): ThreadId => ThreadId.makeUnsafe(randomUUID());
+export const newThreadId = (): ThreadId => ThreadId.make(randomUUID());
 
-export const newMessageId = (): MessageId => MessageId.makeUnsafe(randomUUID());
+export const newDraftId = (): DraftId => DraftId.make(randomUUID());
+
+export const newMessageId = (): MessageId => MessageId.make(randomUUID());

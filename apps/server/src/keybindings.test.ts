@@ -2,19 +2,19 @@ import { KeybindingCommand, KeybindingRule, KeybindingsConfig } from "@t3tools/c
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { assertFailure } from "@effect/vitest/utils";
-import { Effect, FileSystem, Layer, Logger, Path, Schema } from "effect";
+import { Cause, Effect, FileSystem, Layer, Logger, Path, Schema } from "effect";
 import { ServerConfig } from "./config";
 
 import {
   DEFAULT_KEYBINDINGS,
   Keybindings,
-  KeybindingsConfigError,
   KeybindingsLive,
   ResolvedKeybindingFromConfig,
   compileResolvedKeybindingRule,
   compileResolvedKeybindingsConfig,
   parseKeybindingShortcut,
 } from "./keybindings";
+import { KeybindingsConfigError } from "@t3tools/contracts";
 
 const KeybindingsConfigJson = Schema.fromJsonString(KeybindingsConfig);
 const makeKeybindingsLayer = () => {
@@ -149,6 +149,23 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
     }),
   );
 
+  it.effect("formats invalid resolved keybinding rules with the custom message", () =>
+    Effect.sync(() => {
+      const result = Schema.decodeUnknownExit(ResolvedKeybindingFromConfig)({
+        key: "mod+shift+d+o",
+        command: "terminal.new",
+      });
+
+      if (result._tag !== "Failure") {
+        assert.fail("Expected invalid keybinding decode to fail");
+      }
+
+      const detail = Cause.pretty(result.cause);
+      assert.isTrue(detail.includes("Invalid keybinding rule"));
+      assert.isFalse(detail.includes("Invalid data"));
+    }),
+  );
+
   it.effect("bootstraps default keybindings when config file is missing", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -163,6 +180,19 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
       const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
       assert.deepEqual(persisted, DEFAULT_KEYBINDINGS);
     }).pipe(Effect.provide(makeKeybindingsLayer())),
+  );
+
+  it.effect("ships configurable thread navigation defaults", () =>
+    Effect.sync(() => {
+      const defaultsByCommand = new Map(
+        DEFAULT_KEYBINDINGS.map((binding) => [binding.command, binding.key] as const),
+      );
+
+      assert.equal(defaultsByCommand.get("thread.previous"), "mod+shift+[");
+      assert.equal(defaultsByCommand.get("thread.next"), "mod+shift+]");
+      assert.equal(defaultsByCommand.get("thread.jump.1"), "mod+1");
+      assert.equal(defaultsByCommand.get("thread.jump.9"), "mod+9");
+    }),
   );
 
   it.effect("uses defaults in runtime when config is malformed without overriding file", () =>

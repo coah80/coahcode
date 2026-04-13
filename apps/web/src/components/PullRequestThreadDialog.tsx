@@ -1,4 +1,4 @@
-import type { GitResolvePullRequestResult } from "@t3tools/contracts";
+import type { EnvironmentId, GitResolvePullRequestResult, ThreadId } from "@t3tools/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -24,6 +24,8 @@ import { Spinner } from "./ui/spinner";
 
 interface PullRequestThreadDialogProps {
   open: boolean;
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
   cwd: string | null;
   initialReference: string | null;
   onOpenChange: (open: boolean) => void;
@@ -32,6 +34,8 @@ interface PullRequestThreadDialogProps {
 
 export function PullRequestThreadDialog({
   open,
+  environmentId,
+  threadId,
   cwd,
   initialReference,
   onOpenChange,
@@ -70,6 +74,7 @@ export function PullRequestThreadDialog({
   const parsedDebouncedReference = parsePullRequestReference(debouncedReference);
   const resolvePullRequestQuery = useQuery(
     gitResolvePullRequestQueryOptions({
+      environmentId,
       cwd,
       reference: open ? parsedDebouncedReference : null,
     }),
@@ -81,13 +86,14 @@ export function PullRequestThreadDialog({
     const cached = queryClient.getQueryData<GitResolvePullRequestResult>([
       "git",
       "pull-request",
+      environmentId,
       cwd,
       parsedReference,
     ]);
     return cached?.pullRequest ?? null;
-  }, [cwd, parsedReference, queryClient]);
+  }, [cwd, environmentId, parsedReference, queryClient]);
   const preparePullRequestThreadMutation = useMutation(
-    gitPreparePullRequestThreadMutationOptions({ cwd, queryClient }),
+    gitPreparePullRequestThreadMutationOptions({ environmentId, cwd, queryClient }),
   );
 
   const liveResolvedPullRequest =
@@ -130,6 +136,7 @@ export function PullRequestThreadDialog({
         const result = await preparePullRequestThreadMutation.mutateAsync({
           reference: parsedReference,
           mode,
+          ...(mode === "worktree" ? { threadId } : {}),
         });
         await onPrepared({
           branch: result.branch,
@@ -147,15 +154,16 @@ export function PullRequestThreadDialog({
       parsedReference,
       preparePullRequestThreadMutation,
       resolvedPullRequest,
+      threadId,
     ],
   );
 
   const validationMessage = !referenceDirty
     ? null
     : reference.trim().length === 0
-      ? "Paste a GitHub pull request URL or enter 123 / #123."
+      ? "Paste a GitHub pull request URL, `gh pr checkout 123`, or enter 123 / #123."
       : parsedReference === null
-        ? "Use a GitHub pull request URL, 123, or #123."
+        ? "Use a GitHub pull request URL, `gh pr checkout 123`, 123, or #123."
         : null;
   const errorMessage =
     validationMessage ??
@@ -191,7 +199,7 @@ export function PullRequestThreadDialog({
             <span className="text-xs font-medium text-foreground">Pull request</span>
             <Input
               ref={referenceInputRef}
-              placeholder="https://github.com/owner/repo/pull/42 or #42"
+              placeholder="https://github.com/owner/repo/pull/42, gh pr checkout 42, or #42"
               value={reference}
               onChange={(event) => {
                 setReferenceDirty(true);

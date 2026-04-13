@@ -1,33 +1,62 @@
-import { ThreadId } from "@t3tools/contracts";
+import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
+import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime";
 import {
   Outlet,
   createRootRouteWithContext,
   type ErrorComponentProps,
+  useLocation,
   useNavigate,
-  useRouterState,
 } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { useEffect, useEffectEvent, useRef } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
-import { Throttler } from "@tanstack/react-pacer";
 
 import { APP_DISPLAY_NAME } from "../branding";
+import { AppSidebarLayout } from "../components/AppSidebarLayout";
+import { CommandPalette } from "../components/CommandPalette";
+import {
+  SlowRpcAckToastCoordinator,
+  WebSocketConnectionCoordinator,
+  WebSocketConnectionSurface,
+} from "../components/WebSocketConnectionSurface";
 import { Button } from "../components/ui/button";
 import { AnchoredToastProvider, ToastProvider, toastManager } from "../components/ui/toast";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
-import { serverConfigQueryOptions, serverQueryKeys } from "../lib/serverReactQuery";
-import { readNativeApi } from "../nativeApi";
-import { clearPromotedDraftThreads, useComposerDraftStore } from "../composerDraftStore";
+import { readLocalApi } from "../localApi";
+import {
+  getServerConfigUpdatedNotification,
+  ServerConfigUpdatedNotification,
+  startServerStateSync,
+  useServerConfig,
+  useServerConfigUpdatedSubscription,
+  useServerWelcomeSubscription,
+} from "../rpc/serverState";
 import { useStore } from "../store";
-import { useTerminalStateStore } from "../terminalStateStore";
-import { terminalRunningSubprocessFromEvent } from "../terminalActivity";
-import { onServerConfigUpdated, onServerWelcome } from "../wsNativeApi";
-import { providerQueryKeys } from "../lib/providerReactQuery";
-import { projectQueryKeys } from "../lib/projectReactQuery";
-import { collectActiveTerminalThreadIds } from "../lib/terminalStateCleanup";
+import { useUiStateStore } from "../uiStateStore";
+import { syncBrowserChromeTheme } from "../hooks/useTheme";
+import {
+  ensureEnvironmentConnectionBootstrapped,
+  getPrimaryEnvironmentConnection,
+  startEnvironmentConnectionService,
+} from "../environments/runtime";
+import { configureClientTracing } from "../observability/clientTracing";
+import {
+  ensurePrimaryEnvironmentReady,
+  resolveInitialServerAuthGateState,
+  updatePrimaryEnvironmentDescriptor,
+} from "../environments/primary";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
 }>()({
+  beforeLoad: async () => {
+    const [, authGateState] = await Promise.all([
+      ensurePrimaryEnvironmentReady(),
+      resolveInitialServerAuthGateState(),
+    ]);
+    return {
+      authGateState,
+    };
+  },
   component: RootRouteView,
   errorComponent: RootRouteErrorView,
   head: () => ({
@@ -36,24 +65,41 @@ export const Route = createRootRouteWithContext<{
 });
 
 function RootRouteView() {
-  if (!readNativeApi()) {
-    return (
-      <div className="flex h-screen flex-col bg-background text-foreground">
-        <div className="flex flex-1 items-center justify-center">
-          <p className="text-sm text-muted-foreground">
-            Connecting to {APP_DISPLAY_NAME} server...
-          </p>
-        </div>
-      </div>
-    );
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const { authGateState } = Route.useRouteContext();
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      syncBrowserChromeTheme();
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [pathname]);
+
+  if (pathname === "/pair") {
+    return <Outlet />;
   }
 
+  if (authGateState.status !== "authenticated") {
+    return <Outlet />;
+  }
   return (
     <ToastProvider>
       <AnchoredToastProvider>
+        <AuthenticatedTracingBootstrap />
+        <ServerStateBootstrap />
+        <EnvironmentConnectionManagerBootstrap />
         <EventRouter />
-        <DesktopProjectBootstrap />
-        <Outlet />
+        <WebSocketConnectionCoordinator />
+        <SlowRpcAckToastCoordinator />
+        <WebSocketConnectionSurface>
+          <CommandPalette>
+            <AppSidebarLayout>
+              <Outlet />
+            </AppSidebarLayout>
+          </CommandPalette>
+        </WebSocketConnectionSurface>
       </AnchoredToastProvider>
     </ToastProvider>
   );
@@ -130,138 +176,94 @@ function errorDetails(error: unknown): string {
   }
 }
 
-function EventRouter() {
-  const syncServerReadModel = useStore((store) => store.syncServerReadModel);
-  const setProjectExpanded = useStore((store) => store.setProjectExpanded);
-  const removeOrphanedTerminalStates = useTerminalStateStore(
-    (store) => store.removeOrphanedTerminalStates,
-  );
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const pathnameRef = useRef(pathname);
-  const handledBootstrapThreadIdRef = useRef<string | null>(null);
+function ServerStateBootstrap() {
+  useEffect(() => startServerStateSync(getPrimaryEnvironmentConnection().client.server), []);
 
-  pathnameRef.current = pathname;
+  return null;
+}
+
+function AuthenticatedTracingBootstrap() {
+  useEffect(() => {
+    void configureClientTracing();
+  }, []);
+
+  return null;
+}
+
+function EnvironmentConnectionManagerBootstrap() {
+  const queryClient = useQueryClient();
 
   useEffect(() => {
-    const api = readNativeApi();
-    if (!api) return;
-    let disposed = false;
-    let latestSequence = 0;
-    let syncing = false;
-    let pending = false;
-    let needsProviderInvalidation = false;
+    return startEnvironmentConnectionService(queryClient);
+  }, [queryClient]);
 
-    const flushSnapshotSync = async (): Promise<void> => {
-      const snapshot = await api.orchestration.getSnapshot();
-      if (disposed) return;
-      latestSequence = Math.max(latestSequence, snapshot.snapshotSequence);
-      syncServerReadModel(snapshot);
-      clearPromotedDraftThreads(new Set(snapshot.threads.map((t) => t.id)));
-      const draftThreadIds = Object.keys(
-        useComposerDraftStore.getState().draftThreadsByThreadId,
-      ) as ThreadId[];
-      const activeThreadIds = collectActiveTerminalThreadIds({
-        snapshotThreads: snapshot.threads,
-        draftThreadIds,
-      });
-      removeOrphanedTerminalStates(activeThreadIds);
-      if (pending) {
-        pending = false;
-        await flushSnapshotSync();
-      }
-    };
+  return null;
+}
 
-    const syncSnapshot = async () => {
-      if (syncing) {
-        pending = true;
+function EventRouter() {
+  const setActiveEnvironmentId = useStore((store) => store.setActiveEnvironmentId);
+  const navigate = useNavigate();
+  const pathname = useLocation({ select: (loc) => loc.pathname });
+  const readPathname = useEffectEvent(() => pathname);
+  const handledBootstrapThreadIdRef = useRef<string | null>(null);
+  const seenServerConfigUpdateIdRef = useRef(getServerConfigUpdatedNotification()?.id ?? 0);
+  const disposedRef = useRef(false);
+  const serverConfig = useServerConfig();
+
+  const handleWelcome = useEffectEvent((payload: ServerLifecycleWelcomePayload | null) => {
+    if (!payload) return;
+
+    updatePrimaryEnvironmentDescriptor(payload.environment);
+    setActiveEnvironmentId(payload.environment.environmentId);
+    void (async () => {
+      await ensureEnvironmentConnectionBootstrapped(payload.environment.environmentId);
+      if (disposedRef.current) {
         return;
       }
-      syncing = true;
-      pending = false;
-      try {
-        await flushSnapshotSync();
-      } catch {
-        // Keep prior state and wait for next domain event to trigger a resync.
-      }
-      syncing = false;
-    };
 
-    const domainEventFlushThrottler = new Throttler(
-      () => {
-        if (needsProviderInvalidation) {
-          needsProviderInvalidation = false;
-          void queryClient.invalidateQueries({ queryKey: providerQueryKeys.all });
-          // Invalidate workspace entry queries so the @-mention file picker
-          // reflects files created, deleted, or restored during this turn.
-          void queryClient.invalidateQueries({ queryKey: projectQueryKeys.all });
-        }
-        void syncSnapshot();
-      },
-      {
-        wait: 100,
-        leading: false,
-        trailing: true,
-      },
-    );
-
-    const unsubDomainEvent = api.orchestration.onDomainEvent((event) => {
-      if (event.sequence <= latestSequence) {
+      if (!payload.bootstrapProjectId || !payload.bootstrapThreadId) {
         return;
       }
-      latestSequence = event.sequence;
-      if (event.type === "thread.turn-diff-completed" || event.type === "thread.reverted") {
-        needsProviderInvalidation = true;
-      }
-      domainEventFlushThrottler.maybeExecute();
-    });
-    const unsubTerminalEvent = api.terminal.onEvent((event) => {
-      const hasRunningSubprocess = terminalRunningSubprocessFromEvent(event);
-      if (hasRunningSubprocess === null) {
-        return;
-      }
-      useTerminalStateStore
+      useUiStateStore
         .getState()
-        .setTerminalActivity(
-          ThreadId.makeUnsafe(event.threadId),
-          event.terminalId,
-          hasRunningSubprocess,
+        .setProjectExpanded(
+          scopedProjectKey(
+            scopeProjectRef(payload.environment.environmentId, payload.bootstrapProjectId),
+          ),
+          true,
         );
-    });
-    const unsubWelcome = onServerWelcome((payload) => {
-      void (async () => {
-        await syncSnapshot();
-        if (disposed) {
-          return;
-        }
 
-        if (!payload.bootstrapProjectId || !payload.bootstrapThreadId) {
-          return;
-        }
-        setProjectExpanded(payload.bootstrapProjectId, true);
+      if (readPathname() !== "/") {
+        return;
+      }
+      if (handledBootstrapThreadIdRef.current === payload.bootstrapThreadId) {
+        return;
+      }
+      await navigate({
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId: payload.environment.environmentId,
+          threadId: payload.bootstrapThreadId,
+        },
+        replace: true,
+      });
+      handledBootstrapThreadIdRef.current = payload.bootstrapThreadId;
+    })().catch(() => undefined);
+  });
 
-        if (pathnameRef.current !== "/") {
-          return;
-        }
-        if (handledBootstrapThreadIdRef.current === payload.bootstrapThreadId) {
-          return;
-        }
-        await navigate({
-          to: "/$threadId",
-          params: { threadId: payload.bootstrapThreadId },
-          replace: true,
-        });
-        handledBootstrapThreadIdRef.current = payload.bootstrapThreadId;
-      })().catch(() => undefined);
-    });
-    // onServerConfigUpdated replays the latest cached value synchronously
-    // during subscribe. Skip the toast for that replay so effect re-runs
-    // don't produce duplicate toasts.
-    let subscribed = false;
-    const unsubServerConfigUpdated = onServerConfigUpdated((payload) => {
-      void queryClient.invalidateQueries({ queryKey: serverQueryKeys.config() });
-      if (!subscribed) return;
+  const handleServerConfigUpdated = useEffectEvent(
+    (notification: ServerConfigUpdatedNotification | null) => {
+      if (!notification) return;
+
+      const { id, payload, source } = notification;
+      if (id <= seenServerConfigUpdateIdRef.current) {
+        return;
+      }
+      seenServerConfigUpdateIdRef.current = id;
+      if (source !== "keybindingsUpdated") {
+        return;
+      }
+
       const issue = payload.issues.find((entry) => entry.kind.startsWith("keybindings."));
       if (!issue) {
         toastManager.add({
@@ -279,8 +281,12 @@ function EventRouter() {
         actionProps: {
           children: "Open keybindings.json",
           onClick: () => {
-            void queryClient
-              .ensureQueryData(serverConfigQueryOptions())
+            const api = readLocalApi();
+            if (!api) {
+              return;
+            }
+
+            void Promise.resolve(serverConfig ?? api.server.getConfig())
               .then((config) => {
                 const editor = resolveAndPersistPreferredEditor(config.availableEditors);
                 if (!editor) {
@@ -299,29 +305,27 @@ function EventRouter() {
           },
         },
       });
-    });
-    subscribed = true;
+    },
+  );
+
+  useEffect(() => {
+    if (!serverConfig) {
+      return;
+    }
+
+    updatePrimaryEnvironmentDescriptor(serverConfig.environment);
+    setActiveEnvironmentId(serverConfig.environment.environmentId);
+  }, [serverConfig, setActiveEnvironmentId]);
+
+  useEffect(() => {
+    disposedRef.current = false;
     return () => {
-      disposed = true;
-      needsProviderInvalidation = false;
-      domainEventFlushThrottler.cancel();
-      unsubDomainEvent();
-      unsubTerminalEvent();
-      unsubWelcome();
-      unsubServerConfigUpdated();
+      disposedRef.current = true;
     };
-  }, [
-    navigate,
-    queryClient,
-    removeOrphanedTerminalStates,
-    setProjectExpanded,
-    syncServerReadModel,
-  ]);
+  }, []);
 
-  return null;
-}
+  useServerWelcomeSubscription(handleWelcome);
+  useServerConfigUpdatedSubscription(handleServerConfigUpdated);
 
-function DesktopProjectBootstrap() {
-  // Desktop hydration runs through EventRouter project + orchestration sync.
   return null;
 }

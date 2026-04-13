@@ -6,9 +6,19 @@ import { ChevronDownIcon, FolderClosedIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { Group, GroupSeparator } from "../ui/group";
 import { Menu, MenuItem, MenuPopup, MenuShortcut, MenuTrigger } from "../ui/menu";
-import { AntigravityIcon, CursorIcon, Icon, VisualStudioCode, Zed } from "../Icons";
+import {
+  AntigravityIcon,
+  CursorIcon,
+  Icon,
+  TraeIcon,
+  IntelliJIdeaIcon,
+  VisualStudioCode,
+  VisualStudioCodeInsiders,
+  VSCodium,
+  Zed,
+} from "../Icons";
 import { isMacPlatform, isWindowsPlatform } from "~/lib/utils";
-import { readNativeApi } from "~/nativeApi";
+import { readLocalApi } from "~/localApi";
 
 const resolveOptions = (platform: string, availableEditors: ReadonlyArray<EditorId>) => {
   const baseOptions: ReadonlyArray<{ label: string; Icon: Icon; value: EditorId }> = [
@@ -18,9 +28,24 @@ const resolveOptions = (platform: string, availableEditors: ReadonlyArray<Editor
       value: "cursor",
     },
     {
+      label: "Trae",
+      Icon: TraeIcon,
+      value: "trae",
+    },
+    {
       label: "VS Code",
       Icon: VisualStudioCode,
       value: "vscode",
+    },
+    {
+      label: "VS Code Insiders",
+      Icon: VisualStudioCodeInsiders,
+      value: "vscode-insiders",
+    },
+    {
+      label: "VSCodium",
+      Icon: VSCodium,
+      value: "vscodium",
     },
     {
       label: "Zed",
@@ -31,6 +56,11 @@ const resolveOptions = (platform: string, availableEditors: ReadonlyArray<Editor
       label: "Antigravity",
       Icon: AntigravityIcon,
       value: "antigravity",
+    },
+    {
+      label: "IntelliJ IDEA",
+      Icon: IntelliJIdeaIcon,
+      value: "idea",
     },
     {
       label: isMacPlatform(platform)
@@ -63,7 +93,7 @@ export const OpenInPicker = memo(function OpenInPicker({
 
   const openInEditor = useCallback(
     (editorId: EditorId | null) => {
-      const api = readNativeApi();
+      const api = readLocalApi();
       if (!api || !openInCwd) return;
       const editor = editorId ?? preferredEditor;
       if (!editor) return;
@@ -80,7 +110,7 @@ export const OpenInPicker = memo(function OpenInPicker({
 
   useEffect(() => {
     const handler = (e: globalThis.KeyboardEvent) => {
-      const api = readNativeApi();
+      const api = readLocalApi();
       if (!isOpenFavoriteEditorShortcut(e, keybindings)) return;
       if (!api || !openInCwd) return;
       if (!preferredEditor) return;
@@ -101,11 +131,11 @@ export const OpenInPicker = memo(function OpenInPicker({
         onClick={() => openInEditor(preferredEditor)}
       >
         {primaryOption?.Icon && <primaryOption.Icon aria-hidden="true" className="size-3.5" />}
-        <span className="sr-only @sm/header-actions:not-sr-only @sm/header-actions:ml-0.5">
+        <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
           Open
         </span>
       </Button>
-      <GroupSeparator className="hidden @sm/header-actions:block" />
+      <GroupSeparator className="hidden @3xl/header-actions:block" />
       <Menu>
         <MenuTrigger render={<Button aria-label="Copy options" size="icon-xs" variant="outline" />}>
           <ChevronDownIcon aria-hidden="true" className="size-4" />

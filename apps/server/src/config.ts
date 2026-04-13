@@ -6,11 +6,15 @@
  *
  * @module ServerConfig
  */
-import { Effect, FileSystem, Layer, Path, ServiceMap } from "effect";
+import { Effect, FileSystem, Layer, LogLevel, Path, Schema, Context } from "effect";
 
 export const DEFAULT_PORT = 3773;
 
-export type RuntimeMode = "web" | "desktop";
+export const RuntimeMode = Schema.Literals(["web", "desktop"]);
+export type RuntimeMode = typeof RuntimeMode.Type;
+
+export const StartupPresentation = Schema.Literals(["browser", "headless"]);
+export type StartupPresentation = typeof StartupPresentation.Type;
 
 /**
  * ServerDerivedPaths - Derived paths from the base directory.
@@ -19,20 +23,35 @@ export interface ServerDerivedPaths {
   readonly stateDir: string;
   readonly dbPath: string;
   readonly keybindingsConfigPath: string;
+  readonly settingsPath: string;
   readonly worktreesDir: string;
   readonly attachmentsDir: string;
   readonly logsDir: string;
   readonly serverLogPath: string;
+  readonly serverTracePath: string;
   readonly providerLogsDir: string;
   readonly providerEventLogPath: string;
   readonly terminalLogsDir: string;
   readonly anonymousIdPath: string;
+  readonly environmentIdPath: string;
+  readonly serverRuntimeStatePath: string;
+  readonly secretsDir: string;
 }
 
 /**
  * ServerConfigShape - Process/runtime configuration required by the server.
  */
 export interface ServerConfigShape extends ServerDerivedPaths {
+  readonly logLevel: LogLevel.LogLevel;
+  readonly traceMinLevel: LogLevel.LogLevel;
+  readonly traceTimingEnabled: boolean;
+  readonly traceBatchWindowMs: number;
+  readonly traceMaxBytes: number;
+  readonly traceMaxFiles: number;
+  readonly otlpTracesUrl: string | undefined;
+  readonly otlpMetricsUrl: string | undefined;
+  readonly otlpExportIntervalMs: number;
+  readonly otlpServiceName: string;
   readonly mode: RuntimeMode;
   readonly port: number;
   readonly host: string | undefined;
@@ -41,7 +60,8 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly staticDir: string | undefined;
   readonly devUrl: URL | undefined;
   readonly noBrowser: boolean;
-  readonly authToken: string | undefined;
+  readonly startupPresentation: StartupPresentation;
+  readonly desktopBootstrapToken: string | undefined;
   readonly autoBootstrapProjectFromCwd: boolean;
   readonly logWebSocketEvents: boolean;
 }
@@ -60,21 +80,47 @@ export const deriveServerPaths = Effect.fn(function* (
     stateDir,
     dbPath,
     keybindingsConfigPath: join(stateDir, "keybindings.json"),
+    settingsPath: join(stateDir, "settings.json"),
     worktreesDir: join(baseDir, "worktrees"),
     attachmentsDir,
     logsDir,
     serverLogPath: join(logsDir, "server.log"),
+    serverTracePath: join(logsDir, "server.trace.ndjson"),
     providerLogsDir,
     providerEventLogPath: join(providerLogsDir, "events.log"),
     terminalLogsDir: join(logsDir, "terminals"),
     anonymousIdPath: join(stateDir, "anonymous-id"),
+    environmentIdPath: join(stateDir, "environment-id"),
+    serverRuntimeStatePath: join(stateDir, "server-runtime.json"),
+    secretsDir: join(stateDir, "secrets"),
   };
+});
+
+export const ensureServerDirectories = Effect.fn(function* (derivedPaths: ServerDerivedPaths) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+
+  yield* Effect.all(
+    [
+      fs.makeDirectory(derivedPaths.stateDir, { recursive: true }),
+      fs.makeDirectory(derivedPaths.logsDir, { recursive: true }),
+      fs.makeDirectory(derivedPaths.providerLogsDir, { recursive: true }),
+      fs.makeDirectory(derivedPaths.terminalLogsDir, { recursive: true }),
+      fs.makeDirectory(derivedPaths.attachmentsDir, { recursive: true }),
+      fs.makeDirectory(derivedPaths.worktreesDir, { recursive: true }),
+      fs.makeDirectory(path.dirname(derivedPaths.keybindingsConfigPath), { recursive: true }),
+      fs.makeDirectory(path.dirname(derivedPaths.settingsPath), { recursive: true }),
+      fs.makeDirectory(path.dirname(derivedPaths.anonymousIdPath), { recursive: true }),
+      fs.makeDirectory(path.dirname(derivedPaths.serverRuntimeStatePath), { recursive: true }),
+    ],
+    { concurrency: "unbounded" },
+  );
 });
 
 /**
  * ServerConfig - Service tag for server runtime configuration.
  */
-export class ServerConfig extends ServiceMap.Service<ServerConfig, ServerConfigShape>()(
+export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShape>()(
   "t3/config/ServerConfig",
 ) {
   static readonly layerTest = (cwd: string, baseDirOrPrefix: string | { prefix: string }) =>
@@ -89,12 +135,19 @@ export class ServerConfig extends ServiceMap.Service<ServerConfig, ServerConfigS
             ? baseDirOrPrefix
             : yield* fs.makeTempDirectoryScoped({ prefix: baseDirOrPrefix.prefix });
         const derivedPaths = yield* deriveServerPaths(baseDir, devUrl);
-
-        yield* fs.makeDirectory(derivedPaths.stateDir, { recursive: true });
-        yield* fs.makeDirectory(derivedPaths.logsDir, { recursive: true });
-        yield* fs.makeDirectory(derivedPaths.attachmentsDir, { recursive: true });
+        yield* ensureServerDirectories(derivedPaths);
 
         return {
+          logLevel: "Error",
+          traceMinLevel: "Info",
+          traceTimingEnabled: true,
+          traceBatchWindowMs: 200,
+          traceMaxBytes: 10 * 1024 * 1024,
+          traceMaxFiles: 10,
+          otlpTracesUrl: undefined,
+          otlpMetricsUrl: undefined,
+          otlpExportIntervalMs: 10_000,
+          otlpServiceName: "t3-server",
           cwd,
           baseDir,
           ...derivedPaths,
@@ -103,10 +156,11 @@ export class ServerConfig extends ServiceMap.Service<ServerConfig, ServerConfigS
           logWebSocketEvents: false,
           port: 0,
           host: undefined,
-          authToken: undefined,
+          desktopBootstrapToken: undefined,
           staticDir: undefined,
           devUrl,
           noBrowser: false,
+          startupPresentation: "browser",
         } satisfies ServerConfigShape;
       }),
     );
