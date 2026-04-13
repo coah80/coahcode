@@ -111,6 +111,17 @@ export const WS_METHODS = {
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
 
+  // Scheduled tasks
+  scheduledTasksList: "scheduledTasks.list",
+  scheduledTasksCreate: "scheduledTasks.create",
+  scheduledTasksDelete: "scheduledTasks.delete",
+  scheduledTasksToggle: "scheduledTasks.toggle",
+
+  // Workspace
+  workspaceDiscover: "workspace.discover",
+  workspaceCreate: "workspace.create",
+  workspaceSwitch: "workspace.switch",
+
   // Streaming subscriptions
   subscribeGitStatus: "subscribeGitStatus",
   subscribeTerminalEvents: "subscribeTerminalEvents",
@@ -341,6 +352,43 @@ export const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess,
   stream: true,
 });
 
+// ── Scheduled Tasks RPCs ──────────────────────────────────────────────
+export const WsScheduledTasksListRpc = Rpc.make(WS_METHODS.scheduledTasksList, {
+  payload: { success: Schema.Unknown },
+});
+export const WsScheduledTasksCreateRpc = Rpc.make(WS_METHODS.scheduledTasksCreate, {
+  payload: {
+    input: Schema.Struct({
+      name: Schema.String,
+      prompt: Schema.String,
+      cronExpression: Schema.String,
+      workspacePath: Schema.String,
+      model: Schema.String,
+    }),
+    success: Schema.Unknown,
+  },
+});
+export const WsScheduledTasksDeleteRpc = Rpc.make(WS_METHODS.scheduledTasksDelete, {
+  payload: { input: Schema.Struct({ id: Schema.String }), success: Schema.Unknown },
+});
+export const WsScheduledTasksToggleRpc = Rpc.make(WS_METHODS.scheduledTasksToggle, {
+  payload: {
+    input: Schema.Struct({ id: Schema.String, enabled: Schema.Boolean }),
+    success: Schema.Unknown,
+  },
+});
+
+// ── Workspace RPCs ────────────────────────────────────────────────────
+export const WsWorkspaceDiscoverRpc = Rpc.make(WS_METHODS.workspaceDiscover, {
+  payload: { success: Schema.Unknown },
+});
+export const WsWorkspaceCreateRpc = Rpc.make(WS_METHODS.workspaceCreate, {
+  payload: { input: Schema.Struct({ name: Schema.String }), success: Schema.Unknown },
+});
+export const WsWorkspaceSwitchRpc = Rpc.make(WS_METHODS.workspaceSwitch, {
+  payload: { input: Schema.Struct({ path: Schema.String }), success: Schema.Unknown },
+});
+
 export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -378,4 +426,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationReplayEventsRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,
+  WsScheduledTasksListRpc,
+  WsScheduledTasksCreateRpc,
+  WsScheduledTasksDeleteRpc,
+  WsScheduledTasksToggleRpc,
+  WsWorkspaceDiscoverRpc,
+  WsWorkspaceCreateRpc,
+  WsWorkspaceSwitchRpc,
 );
