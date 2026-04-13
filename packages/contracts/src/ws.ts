@@ -75,6 +75,18 @@ export const WS_METHODS = {
   // Server meta
   serverGetConfig: "server.getConfig",
   serverUpsertKeybinding: "server.upsertKeybinding",
+
+  // Scheduled tasks
+  scheduledTasksList: "scheduledTasks.list",
+  scheduledTasksCreate: "scheduledTasks.create",
+  scheduledTasksDelete: "scheduledTasks.delete",
+  scheduledTasksToggle: "scheduledTasks.toggle",
+  scheduledTasksRun: "scheduledTasks.run",
+
+  // Home workspace
+  workspaceDiscover: "workspace.discover",
+  workspaceCreate: "workspace.create",
+  workspaceSwitch: "workspace.switch",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
