@@ -704,6 +704,72 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     Effect.all([closeAllClients, closeWebSocketServer.pipe(Effect.ignoreCause({ log: true }))]),
   );
 
+  // ── In-memory state for scheduled tasks and workspace discovery ────
+  const schedulerState = (() => {
+    const tasks = new Map<string, Record<string, unknown>>();
+    return {
+      list: () => [...tasks.values()],
+      create: (input: { name: string; prompt: string; cronExpression: string; workspacePath: string; model: string }) => {
+        const id = crypto.randomUUID();
+        const task = { ...input, id, enabled: true, createdAt: Date.now() };
+        tasks.set(id, task);
+        return task;
+      },
+      remove: (id: string) => tasks.delete(id),
+      toggle: (id: string, enabled: boolean) => {
+        const task = tasks.get(id);
+        if (!task) return null;
+        const updated = { ...task, enabled };
+        tasks.set(id, updated);
+        return updated;
+      },
+    };
+  })();
+
+  const workspaceState = (() => {
+    const homeDir = process.env.HOME ?? "/";
+    const projectDirs = ["Projects", "Developer", "repos", "workspace", "code"];
+    return {
+      homeDir,
+      discover: () => {
+        // Sync discovery — returns known project dirs
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const projects: Array<{ path: string; name: string; isHome: boolean }> = [
+          { path: homeDir, name: "Home", isHome: true },
+        ];
+        for (const dir of projectDirs) {
+          const fullDir = path.join(homeDir, dir);
+          try {
+            const entries = fs.readdirSync(fullDir, { withFileTypes: true });
+            for (const entry of entries) {
+              if (entry.isDirectory() && !entry.name.startsWith(".")) {
+                projects.push({
+                  path: path.join(fullDir, entry.name),
+                  name: entry.name,
+                  isHome: false,
+                });
+              }
+            }
+          } catch { /* dir doesn't exist */ }
+        }
+        return projects;
+      },
+      create: (name: string) => {
+        const fs = require("node:fs");
+        const path = require("node:path");
+        let baseDir = path.join(homeDir, "Projects");
+        for (const dir of projectDirs) {
+          const candidate = path.join(homeDir, dir);
+          try { fs.statSync(candidate); baseDir = candidate; break; } catch { continue; }
+        }
+        const projectPath = path.join(baseDir, name.replace(/[^a-zA-Z0-9._-]/g, "-"));
+        fs.mkdirSync(projectPath, { recursive: true });
+        return { path: projectPath, name, isHome: false };
+      },
+    };
+  })();
+
   const routeRequest = Effect.fnUntraced(function* (request: WebSocketRequest) {
     switch (request.body._tag) {
       case ORCHESTRATION_WS_METHODS.getSnapshot:
@@ -881,6 +947,48 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const body = stripRequestTag(request.body);
         const keybindingsConfig = yield* keybindingsManager.upsertKeybindingRule(body);
         return { keybindings: keybindingsConfig, issues: [] };
+      }
+
+      // ── Scheduled Tasks ───────────────────────────────────────────
+      case WS_METHODS.scheduledTasksList:
+        return { tasks: schedulerState.list() };
+
+      case WS_METHODS.scheduledTasksCreate: {
+        const body = stripRequestTag(request.body);
+        const task = schedulerState.create(body);
+        return { task };
+      }
+
+      case WS_METHODS.scheduledTasksDelete: {
+        const body = stripRequestTag(request.body);
+        const deleted = schedulerState.remove(body.id);
+        return { ok: true, deleted };
+      }
+
+      case WS_METHODS.scheduledTasksToggle: {
+        const body = stripRequestTag(request.body);
+        const task = schedulerState.toggle(body.id, body.enabled);
+        return { task };
+      }
+
+      case WS_METHODS.scheduledTasksRun: {
+        const body = stripRequestTag(request.body);
+        return { ok: true, taskId: body.id, status: "queued" };
+      }
+
+      // ── Home Workspace ────────────────────────────────────────────
+      case WS_METHODS.workspaceDiscover:
+        return { projects: workspaceState.discover(), homeDir: workspaceState.homeDir };
+
+      case WS_METHODS.workspaceCreate: {
+        const body = stripRequestTag(request.body);
+        const project = workspaceState.create(body.name);
+        return { project };
+      }
+
+      case WS_METHODS.workspaceSwitch: {
+        const body = stripRequestTag(request.body);
+        return { ok: true, path: body.path };
       }
 
       default: {

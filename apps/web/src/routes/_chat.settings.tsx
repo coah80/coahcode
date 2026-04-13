@@ -29,6 +29,7 @@ import {
 import { Switch } from "../components/ui/switch";
 import { APP_VERSION } from "../branding";
 import { SidebarInset } from "~/components/ui/sidebar";
+import { ScheduledTasks } from "~/components/ScheduledTasks";
 
 const THEME_OPTIONS = [
   {
@@ -699,6 +700,16 @@ function SettingsRouteView() {
                 </div>
               ) : null}
             </section>
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">Scheduled Tasks</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Set up recurring agent runs — daily code reviews, test runs, dependency updates, and more.
+                </p>
+              </div>
+              <ScheduledTasks />
+            </section>
+
             <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">About</h2>

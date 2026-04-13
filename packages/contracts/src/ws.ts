@@ -151,6 +151,42 @@ const WebSocketRequestBody = Schema.Union([
   // Server meta
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
+
+  // Scheduled tasks
+  tagRequestBody(WS_METHODS.scheduledTasksList, Schema.Struct({})),
+  tagRequestBody(
+    WS_METHODS.scheduledTasksCreate,
+    Schema.Struct({
+      name: Schema.String,
+      prompt: Schema.String,
+      cronExpression: Schema.String,
+      workspacePath: Schema.String,
+      model: Schema.String,
+    }),
+  ),
+  tagRequestBody(
+    WS_METHODS.scheduledTasksDelete,
+    Schema.Struct({ id: Schema.String }),
+  ),
+  tagRequestBody(
+    WS_METHODS.scheduledTasksToggle,
+    Schema.Struct({ id: Schema.String, enabled: Schema.Boolean }),
+  ),
+  tagRequestBody(
+    WS_METHODS.scheduledTasksRun,
+    Schema.Struct({ id: Schema.String }),
+  ),
+
+  // Home workspace
+  tagRequestBody(WS_METHODS.workspaceDiscover, Schema.Struct({})),
+  tagRequestBody(
+    WS_METHODS.workspaceCreate,
+    Schema.Struct({ name: Schema.String }),
+  ),
+  tagRequestBody(
+    WS_METHODS.workspaceSwitch,
+    Schema.Struct({ path: Schema.String }),
+  ),
 ]);
 
 export const WebSocketRequest = Schema.Struct({
