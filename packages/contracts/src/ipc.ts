@@ -170,4 +170,42 @@ export interface NativeApi {
     replayEvents: (fromSequenceExclusive: number) => Promise<OrchestrationEvent[]>;
     onDomainEvent: (callback: (event: OrchestrationEvent) => void) => () => void;
   };
+  scheduledTasks: {
+    list: () => Promise<{ tasks: readonly ScheduledTaskInfo[] }>;
+    create: (input: ScheduledTaskCreateInput) => Promise<{ task: ScheduledTaskInfo }>;
+    remove: (id: string) => Promise<{ ok: boolean; deleted: boolean }>;
+    toggle: (id: string, enabled: boolean) => Promise<{ task: ScheduledTaskInfo | null }>;
+    run: (id: string) => Promise<{ ok: boolean; taskId: string; status: string }>;
+  };
+  workspace: {
+    discover: () => Promise<{ projects: readonly WorkspaceProject[]; homeDir: string }>;
+    create: (name: string) => Promise<{ project: WorkspaceProject }>;
+    switchTo: (path: string) => Promise<{ ok: boolean; path: string }>;
+  };
+}
+
+export interface ScheduledTaskInfo {
+  readonly id: string;
+  readonly name: string;
+  readonly prompt: string;
+  readonly cronExpression: string;
+  readonly workspacePath: string;
+  readonly model: string;
+  readonly enabled: boolean;
+  readonly createdAt?: number;
+  readonly lastRun?: number;
+}
+
+export interface ScheduledTaskCreateInput {
+  readonly name: string;
+  readonly prompt: string;
+  readonly cronExpression: string;
+  readonly workspacePath: string;
+  readonly model: string;
+}
+
+export interface WorkspaceProject {
+  readonly path: string;
+  readonly name: string;
+  readonly isHome: boolean;
 }

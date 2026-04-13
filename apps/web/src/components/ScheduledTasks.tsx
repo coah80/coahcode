@@ -6,19 +6,14 @@ import {
   TrashIcon,
 } from "lucide-react";
 import { useState } from "react";
-
-interface ScheduledTask {
-  id: string;
-  name: string;
-  prompt: string;
-  cronExpression: string;
-  workspacePath: string;
-  model: string;
-  enabled: boolean;
-  lastRun?: number;
-  nextRun?: number;
-  lastResult?: string;
-}
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ScheduledTaskInfo } from "@t3tools/contracts";
+import {
+  scheduledTasksCreateMutationOptions,
+  scheduledTasksDeleteMutationOptions,
+  scheduledTasksListQueryOptions,
+  scheduledTasksToggleMutationOptions,
+} from "~/lib/scheduledTasksReactQuery";
 
 const PRESET_SCHEDULES = [
   { label: "Every 5 minutes", cron: "*/5 * * * *" },
@@ -42,7 +37,14 @@ function formatRelativeTime(timestamp: number | undefined): string {
 }
 
 export function ScheduledTasks() {
-  const [tasks, setTasks] = useState<ScheduledTask[]>([]);
+  const queryClient = useQueryClient();
+  const tasksQuery = useQuery(scheduledTasksListQueryOptions());
+  const createMutation = useMutation(scheduledTasksCreateMutationOptions(queryClient));
+  const deleteMutation = useMutation(scheduledTasksDeleteMutationOptions(queryClient));
+  const toggleMutation = useMutation(scheduledTasksToggleMutationOptions(queryClient));
+
+  const tasks: readonly ScheduledTaskInfo[] = tasksQuery.data?.tasks ?? [];
+
   const [showCreate, setShowCreate] = useState(false);
   const [newTask, setNewTask] = useState({
     name: "",
@@ -54,12 +56,7 @@ export function ScheduledTasks() {
 
   const handleCreate = () => {
     if (!newTask.name || !newTask.prompt) return;
-    const task: ScheduledTask = {
-      ...newTask,
-      id: crypto.randomUUID(),
-      enabled: true,
-    };
-    setTasks((prev) => [...prev, task]);
+    createMutation.mutate(newTask);
     setNewTask({
       name: "",
       prompt: "",
@@ -70,23 +67,12 @@ export function ScheduledTasks() {
     setShowCreate(false);
   };
 
-  const toggleTask = (id: string) => {
-    setTasks((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, enabled: !t.enabled } : t))
-    );
-  };
-
-  const deleteTask = (id: string) => {
-    setTasks((prev) => prev.filter((t) => t.id !== id));
-  };
-
   return (
-    <div className="flex flex-col gap-4 p-4">
+    <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h2 className="flex items-center gap-2 text-sm font-medium">
-          <CalendarClockIcon className="size-4 text-primary" />
-          Scheduled Tasks
-        </h2>
+        <span className="text-xs text-muted-foreground">
+          {tasks.length} task{tasks.length !== 1 ? "s" : ""}
+        </span>
         <button
           type="button"
           onClick={() => setShowCreate(!showCreate)}
@@ -98,7 +84,7 @@ export function ScheduledTasks() {
       </div>
 
       {showCreate && (
-        <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3">
+        <div className="flex flex-col gap-3 rounded-lg border border-border bg-background p-3">
           <input
             type="text"
             placeholder="Task name"
@@ -153,9 +139,10 @@ export function ScheduledTasks() {
             <button
               type="button"
               onClick={handleCreate}
-              className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90"
+              disabled={createMutation.isPending}
+              className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
-              Create
+              {createMutation.isPending ? "Creating..." : "Create"}
             </button>
           </div>
         </div>
@@ -181,8 +168,8 @@ export function ScheduledTasks() {
             >
               <button
                 type="button"
-                onClick={() => toggleTask(task.id)}
-                className={`flex size-7 items-center justify-center rounded-md ${
+                onClick={() => toggleMutation.mutate({ id: task.id, enabled: !task.enabled })}
+                className={`flex size-7 shrink-0 items-center justify-center rounded-md ${
                   task.enabled
                     ? "bg-primary text-primary-foreground"
                     : "bg-muted text-muted-foreground"
@@ -194,28 +181,26 @@ export function ScheduledTasks() {
                   <PlayIcon className="size-3.5" />
                 )}
               </button>
-              <div className="flex-1 min-w-0">
+              <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium truncate">{task.name}</span>
+                  <span className="truncate text-sm font-medium">{task.name}</span>
                   <span className="text-xs text-muted-foreground">
                     {PRESET_SCHEDULES.find((p) => p.cron === task.cronExpression)?.label ??
                       task.cronExpression}
                   </span>
                 </div>
-                <p className="text-xs text-muted-foreground truncate">{task.prompt}</p>
-                <div className="flex gap-3 mt-0.5">
+                <p className="truncate text-xs text-muted-foreground">{task.prompt}</p>
+                <div className="mt-0.5 flex gap-3">
                   <span className="text-[10px] text-muted-foreground/60">
                     Last run: {formatRelativeTime(task.lastRun)}
                   </span>
-                  <span className="text-[10px] text-muted-foreground/60">
-                    Model: {task.model}
-                  </span>
+                  <span className="text-[10px] text-muted-foreground/60">Model: {task.model}</span>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => deleteTask(task.id)}
-                className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                onClick={() => deleteMutation.mutate(task.id)}
+                className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
               >
                 <TrashIcon className="size-3.5" />
               </button>

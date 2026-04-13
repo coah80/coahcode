@@ -161,6 +161,18 @@ export function createWsNativeApi(): NativeApi {
       getConfig: () => transport.request(WS_METHODS.serverGetConfig),
       upsertKeybinding: (input) => transport.request(WS_METHODS.serverUpsertKeybinding, input),
     },
+    scheduledTasks: {
+      list: () => transport.request(WS_METHODS.scheduledTasksList),
+      create: (input) => transport.request(WS_METHODS.scheduledTasksCreate, input),
+      remove: (id) => transport.request(WS_METHODS.scheduledTasksDelete, { id }),
+      toggle: (id, enabled) => transport.request(WS_METHODS.scheduledTasksToggle, { id, enabled }),
+      run: (id) => transport.request(WS_METHODS.scheduledTasksRun, { id }),
+    },
+    workspace: {
+      discover: () => transport.request(WS_METHODS.workspaceDiscover),
+      create: (name) => transport.request(WS_METHODS.workspaceCreate, { name }),
+      switchTo: (path) => transport.request(WS_METHODS.workspaceSwitch, { path }),
+    },
     orchestration: {
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),
       dispatchCommand: (command) =>

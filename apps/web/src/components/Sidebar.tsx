@@ -1155,7 +1155,7 @@ export default function Sidebar() {
         <TooltipTrigger
           render={
             <div className="flex min-w-0 flex-1 items-center gap-1 ml-1 cursor-pointer">
-              <T3Wordmark />
+              <span className="text-sm font-bold tracking-tight text-primary">Coah</span>
               <span className="truncate text-sm font-medium tracking-tight text-muted-foreground">
                 Code
               </span>

@@ -30,6 +30,7 @@ import { Switch } from "../components/ui/switch";
 import { APP_VERSION } from "../branding";
 import { SidebarInset } from "~/components/ui/sidebar";
 import { ScheduledTasks } from "~/components/ScheduledTasks";
+import { WorkspacePicker } from "~/components/WorkspacePicker";
 
 const THEME_OPTIONS = [
   {
@@ -700,6 +701,16 @@ function SettingsRouteView() {
                 </div>
               ) : null}
             </section>
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">Workspaces</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Discover and switch between project workspaces. Start from Home for general tasks.
+                </p>
+              </div>
+              <WorkspacePicker />
+            </section>
+
             <section className="rounded-2xl border border-border bg-card p-5">
               <div className="mb-4">
                 <h2 className="text-sm font-medium text-foreground">Scheduled Tasks</h2>
