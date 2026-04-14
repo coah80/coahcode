@@ -51,3 +51,34 @@ Docs:
 - Codex-Monitor (Tauri, feature-complete, strong reference implementation): https://github.com/Dimillian/CodexMonitor
 
 Use these as implementation references when designing protocol handling, UX flows, and operational safeguards.
+
+## Cursor Cloud specific instructions
+
+### Runtime versions
+
+Requires Node.js 24.13.1 and Bun 1.3.9 (pinned in `.mise.toml`). The VM update script handles `bun install`; Node and Bun are pre-installed in the environment.
+
+### Running services
+
+- `T3CODE_NO_BROWSER=1 bun dev` starts both the backend (port 13773) and Vite dev server (port 5733) via turbo TUI. Use `T3CODE_NO_BROWSER=1` to suppress auto-open in headless environments.
+- Backend serves WebSocket/HTTP on port 13773; web app connects to it via `VITE_WS_URL=ws://localhost:13773`.
+- SQLite data lives at `~/.t3/dev/state.sqlite` (auto-created on first run, migrations run automatically).
+
+### Lint / Format / Typecheck / Test
+
+- `bun lint` — oxlint (0 errors expected; warnings are acceptable)
+- `bun fmt` — oxfmt (auto-fix); `bun fmt:check` for CI
+- `bun typecheck` — turbo-orchestrated tsc across all 8 packages
+- `bun run test` — turbo-orchestrated Vitest (never use bare `bun test`)
+
+### Provider CLIs not available
+
+Codex CLI and Claude CLI are not installed in the Cloud Agent VM. The app starts and is fully interactive without them — provider sessions just can't be created. This is expected and does not block UI development or non-provider tests.
+
+### Desktop (Electron) dev mode
+
+`bun dev:desktop` does not work in the Cloud Agent VM for two reasons:
+1. `tsdown --watch` hangs during the desktop bundle build step, preventing Electron from launching via the standard orchestration.
+2. `/dev/shm` is only 64MB in the VM, causing Chromium's `ERR_INSUFFICIENT_RESOURCES` when Electron loads the Vite dev server. The `--disable-dev-shm-usage` flag fixes the resource error, but the auth bootstrap still fails because the desktop IPC channel isn't wired without the full `dev:desktop` orchestration.
+
+Use `bun dev` (web mode) for all UI development. The web mode is functionally equivalent — the same React app runs in both modes.
